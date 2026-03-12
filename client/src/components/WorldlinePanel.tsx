@@ -34,8 +34,8 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
   const [newWlName, setNewWlName] = useState('');
   const [newWlColor, setNewWlColor] = useState('#6366f1');
 
-  // Sidebar collapse
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Sidebar collapse — default closed on mobile
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 768);
 
   // Visibility toggles (persisted to localStorage)
   const [showWorldlines, setShowWorldlines] = useState<boolean>(() => {
@@ -810,6 +810,7 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
         </button>
 
         {/* Sidebar */}
+        {sidebarOpen && <div className="wl-sidebar-backdrop active" onClick={() => setSidebarOpen(false)} />}
         {sidebarOpen && (
           <div className="wl-sidebar">
             {/* Visibility toggles */}
