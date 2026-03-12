@@ -3541,3 +3541,330 @@ input[type="color"] {
   background: var(--bg-tertiary);
   color: var(--text-secondary);
 }
+
+/* ========================
+   Mobile Responsive (iPhone)
+   ======================== */
+@media (max-width: 768px) {
+  /* --- Header & Navigation --- */
+  .app-header {
+    padding: 0 10px;
+    height: auto;
+    min-height: 44px;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .header-left {
+    gap: 8px;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .app-title {
+    font-size: 15px;
+  }
+
+  .nav-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex-shrink: 1;
+    min-width: 0;
+  }
+
+  .nav-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-tab {
+    padding: 6px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .arxiv-refresh-timer {
+    display: none;
+  }
+
+  .settings-btn {
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* --- Browser & Library Controls --- */
+  .browser-controls, .library-controls {
+    padding: 10px 12px;
+  }
+
+  .control-row {
+    gap: 8px;
+  }
+
+  .control-group {
+    flex: 1 1 100%;
+  }
+
+  .control-group select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .search-group {
+    min-width: 0;
+    width: 100%;
+    flex-basis: 100%;
+  }
+
+  /* --- Paper Cards --- */
+  .paper-card {
+    padding: 12px;
+  }
+
+  .paper-card-header {
+    flex-wrap: wrap;
+  }
+
+  .paper-actions {
+    flex-wrap: wrap;
+  }
+
+  .paper-meta {
+    gap: 8px;
+  }
+
+  .paper-categories {
+    flex-wrap: wrap;
+  }
+
+  /* --- Bulk Toolbar --- */
+  .bulk-toolbar {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+
+  .bulk-separator {
+    display: none;
+  }
+
+  /* --- Paper Viewer --- */
+  .viewer-header {
+    padding: 8px 12px;
+  }
+
+  .viewer-title-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .viewer-title-row h2 {
+    font-size: 14px;
+  }
+
+  .viewer-title-actions {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .viewer-meta {
+    gap: 6px;
+  }
+
+  /* Sidebar as full-screen overlay on mobile */
+  .viewer-sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 100vw;
+    z-index: 200;
+    border-left: none;
+    box-shadow: -4px 0 20px rgba(0, 0, 0, 0.3);
+  }
+
+  .viewer-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 199;
+  }
+
+  .sidebar-toggle {
+    width: 32px;
+    font-size: 12px;
+  }
+
+  .sidebar-tab {
+    padding: 10px 6px;
+    font-size: 11px;
+  }
+
+  /* --- PDF Toolbar --- */
+  .pdf-toolbar {
+    padding: 4px 8px;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .pdf-toolbar-group {
+    gap: 4px;
+  }
+
+  .pdf-nav-btn {
+    width: 36px;
+    height: 36px;
+    font-size: 14px;
+  }
+
+  .pdf-page-input {
+    height: 32px;
+  }
+
+  .pdf-zoom-level {
+    display: none;
+  }
+
+  .pdf-outline-panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 85vw;
+    max-width: 280px;
+    z-index: 201;
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
+  }
+
+  /* --- Batch Import (sidebar panel) --- */
+  .batch-import-body {
+    flex-direction: column;
+  }
+
+  /* --- Settings Modal --- */
+  .settings-modal {
+    max-height: 85vh;
+    width: 95vw;
+  }
+
+  .settings-body {
+    padding: 12px;
+  }
+
+  .scheme-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .settings-key-row {
+    flex-direction: column;
+  }
+
+  /* --- Chat Panel --- */
+  .chat-input-area {
+    padding: 8px 10px;
+  }
+
+  .chat-session-bar {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .chat-message-content {
+    font-size: 13px;
+  }
+
+  /* --- Chat History View --- */
+  .chat-history {
+    padding: 12px;
+  }
+
+  .chat-history-group-header {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .chat-history-group-actions {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  /* --- Worldline Panel --- */
+  .wl-sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 85vw;
+    max-width: 320px;
+    z-index: 200;
+    box-shadow: -4px 0 20px rgba(0, 0, 0, 0.3);
+  }
+
+  .wl-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 199;
+  }
+
+  /* --- Touch Targets --- */
+  .btn-sm {
+    padding: 8px 12px;
+    min-height: 36px;
+    font-size: 12px;
+  }
+
+  .btn-icon {
+    min-width: 36px;
+    min-height: 36px;
+    padding: 6px;
+  }
+
+  select, input[type="text"], input[type="search"], input[type="number"], textarea {
+    min-height: 36px;
+    font-size: 16px; /* prevents iOS zoom on focus */
+  }
+
+  /* --- Notification --- */
+  .notification {
+    right: 10px;
+    left: 10px;
+    top: 50px;
+  }
+
+  /* --- Favorite Authors --- */
+  .authors-panel {
+    padding: 12px;
+  }
+
+  /* --- Generic spacing adjustments --- */
+  .app-main {
+    overflow-x: hidden;
+  }
+
+  /* Hide backdrop by default — shown via component rendering */
+  .viewer-sidebar-backdrop,
+  .wl-sidebar-backdrop {
+    display: none;
+  }
+
+  /* When backdrop is rendered it should show */
+  .viewer-sidebar-backdrop.active,
+  .wl-sidebar-backdrop.active {
+    display: block;
+  }
+}

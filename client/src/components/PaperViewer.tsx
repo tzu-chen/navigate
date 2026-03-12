@@ -231,6 +231,7 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
           {sidebarVisible ? '\u25B6' : '\u25C0'}
         </button>
 
+        {sidebarVisible && <div className="viewer-sidebar-backdrop active" onClick={() => setSidebarVisible(false)} />}
         {sidebarVisible && <div className="viewer-sidebar">
           <div className="sidebar-tabs">
             {saved && <button
