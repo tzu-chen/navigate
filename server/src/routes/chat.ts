@@ -1,6 +1,18 @@
 import { Router, Request, Response } from 'express';
 import fs from 'fs';
-import { getRelatedPaperTitlesByArxivId } from '../services/database';
+import {
+  getRelatedPaperTitlesByArxivId,
+  createChatSession,
+  getChatSession as dbGetChatSession,
+  getChatSessionsByArxivId,
+  getChatSessionsByWorldlineId,
+  getAllChatSessions,
+  deleteChatSession as dbDeleteChatSession,
+  deleteChatSessionsByArxivId,
+  addChatMessage,
+  getChatMessages,
+  getSetting,
+} from '../services/database';
 import { getLocalPdfPathForArxivId } from '../services/pdf';
 
 const router = Router();
@@ -61,8 +73,10 @@ interface ChatRequest {
 // POST /api/chat - Send a message to Claude with the full PDF document
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { messages, apiKey, paperContext } = req.body as ChatRequest;
+    const { messages, apiKey: clientApiKey, paperContext } = req.body as ChatRequest;
 
+    // Use client-provided key, or fall back to server-stored key
+    const apiKey = clientApiKey || getSetting('claudeApiKey');
     if (!apiKey) {
       return res.status(400).json({ error: 'Claude API key is required. Please set it in Settings.' });
     }
@@ -197,8 +211,10 @@ interface WorldlineChatRequest {
 
 router.post('/worldline', async (req: Request, res: Response) => {
   try {
-    const { messages, apiKey, worldlineContext } = req.body as WorldlineChatRequest;
+    const { messages, apiKey: clientApiKey, worldlineContext } = req.body as WorldlineChatRequest;
 
+    // Use client-provided key, or fall back to server-stored key
+    const apiKey = clientApiKey || getSetting('claudeApiKey');
     if (!apiKey) {
       return res.status(400).json({ error: 'Claude API key is required. Please set it in Settings.' });
     }
@@ -272,6 +288,222 @@ Help the user understand the connections between these papers, their collective 
   } catch (error) {
     console.error('Worldline chat error:', error);
     res.status(500).json({ error: 'Failed to process worldline chat request' });
+  }
+});
+
+// --- Chat Session CRUD ---
+
+// GET /api/chat/sessions - Get all paper chat sessions
+router.get('/sessions', (_req: Request, res: Response) => {
+  try {
+    const sessions = getAllChatSessions();
+    // Attach messages to each session
+    const result = (sessions as any[]).map(s => ({
+      ...s,
+      messages: (getChatMessages(s.id) as any[]).map(m => ({
+        role: m.role,
+        content: m.content,
+        usage: m.input_tokens != null ? {
+          input_tokens: m.input_tokens,
+          output_tokens: m.output_tokens,
+          cache_creation_input_tokens: m.cache_creation_input_tokens,
+          cache_read_input_tokens: m.cache_read_input_tokens,
+          estimated_cost: m.estimated_cost,
+          model: m.model,
+        } : undefined,
+      })),
+    }));
+    res.json(result);
+  } catch (error) {
+    console.error('Failed to get chat sessions:', error);
+    res.status(500).json({ error: 'Failed to get chat sessions' });
+  }
+});
+
+// GET /api/chat/sessions/paper/:arxivId - Get sessions for a specific paper
+router.get('/sessions/paper/:arxivId', (req: Request, res: Response) => {
+  try {
+    const sessions = getChatSessionsByArxivId(req.params.arxivId as string);
+    const result = (sessions as any[]).map(s => ({
+      ...s,
+      messages: (getChatMessages(s.id) as any[]).map(m => ({
+        role: m.role,
+        content: m.content,
+        usage: m.input_tokens != null ? {
+          input_tokens: m.input_tokens,
+          output_tokens: m.output_tokens,
+          cache_creation_input_tokens: m.cache_creation_input_tokens,
+          cache_read_input_tokens: m.cache_read_input_tokens,
+          estimated_cost: m.estimated_cost,
+          model: m.model,
+        } : undefined,
+      })),
+    }));
+    res.json(result);
+  } catch (error) {
+    console.error('Failed to get paper chat sessions:', error);
+    res.status(500).json({ error: 'Failed to get chat sessions' });
+  }
+});
+
+// GET /api/chat/sessions/worldline/:worldlineId - Get sessions for a specific worldline
+router.get('/sessions/worldline/:worldlineId', (req: Request, res: Response) => {
+  try {
+    const worldlineId = parseInt(req.params.worldlineId as string);
+    if (isNaN(worldlineId)) {
+      return res.status(400).json({ error: 'Invalid worldline ID' });
+    }
+    const sessions = getChatSessionsByWorldlineId(worldlineId);
+    const result = (sessions as any[]).map(s => ({
+      ...s,
+      messages: (getChatMessages(s.id) as any[]).map(m => ({
+        role: m.role,
+        content: m.content,
+        usage: m.input_tokens != null ? {
+          input_tokens: m.input_tokens,
+          output_tokens: m.output_tokens,
+          cache_creation_input_tokens: m.cache_creation_input_tokens,
+          cache_read_input_tokens: m.cache_read_input_tokens,
+          estimated_cost: m.estimated_cost,
+          model: m.model,
+        } : undefined,
+      })),
+    }));
+    res.json(result);
+  } catch (error) {
+    console.error('Failed to get worldline chat sessions:', error);
+    res.status(500).json({ error: 'Failed to get chat sessions' });
+  }
+});
+
+// GET /api/chat/sessions/:id - Get a single session with messages
+router.get('/sessions/:id', (req: Request, res: Response) => {
+  try {
+    const session = dbGetChatSession(req.params.id as string);
+    if (!session) {
+      return res.status(404).json({ error: 'Chat session not found' });
+    }
+    const messages = (getChatMessages(req.params.id as string) as any[]).map(m => ({
+      role: m.role,
+      content: m.content,
+      usage: m.input_tokens != null ? {
+        input_tokens: m.input_tokens,
+        output_tokens: m.output_tokens,
+        cache_creation_input_tokens: m.cache_creation_input_tokens,
+        cache_read_input_tokens: m.cache_read_input_tokens,
+        estimated_cost: m.estimated_cost,
+        model: m.model,
+      } : undefined,
+    }));
+    res.json({ ...(session as any), messages });
+  } catch (error) {
+    console.error('Failed to get chat session:', error);
+    res.status(500).json({ error: 'Failed to get chat session' });
+  }
+});
+
+// POST /api/chat/sessions - Create a new chat session
+router.post('/sessions', (req: Request, res: Response) => {
+  try {
+    const { id, arxiv_id, paper_title, worldline_id, worldline_name, session_type } = req.body;
+    if (!id || !session_type) {
+      return res.status(400).json({ error: 'id and session_type are required' });
+    }
+    createChatSession({
+      id,
+      arxiv_id,
+      paper_title,
+      worldline_id,
+      worldline_name,
+      session_type,
+    });
+    const session = dbGetChatSession(id);
+    res.status(201).json(session);
+  } catch (error) {
+    console.error('Failed to create chat session:', error);
+    res.status(500).json({ error: 'Failed to create chat session' });
+  }
+});
+
+// POST /api/chat/sessions/:id/messages - Add a message to a session
+router.post('/sessions/:id/messages', (req: Request, res: Response) => {
+  try {
+    const session = dbGetChatSession(req.params.id as string);
+    if (!session) {
+      return res.status(404).json({ error: 'Chat session not found' });
+    }
+    const { role, content, usage } = req.body;
+    if (!role || !content) {
+      return res.status(400).json({ error: 'role and content are required' });
+    }
+    addChatMessage({
+      session_id: req.params.id as string,
+      role,
+      content,
+      input_tokens: usage?.input_tokens,
+      output_tokens: usage?.output_tokens,
+      cache_creation_input_tokens: usage?.cache_creation_input_tokens,
+      cache_read_input_tokens: usage?.cache_read_input_tokens,
+      estimated_cost: usage?.estimated_cost,
+      model: usage?.model,
+    });
+    res.status(201).json({ success: true });
+  } catch (error) {
+    console.error('Failed to add chat message:', error);
+    res.status(500).json({ error: 'Failed to add chat message' });
+  }
+});
+
+// POST /api/chat/sessions/:id/messages/batch - Add multiple messages to a session at once
+router.post('/sessions/:id/messages/batch', (req: Request, res: Response) => {
+  try {
+    const session = dbGetChatSession(req.params.id as string);
+    if (!session) {
+      return res.status(404).json({ error: 'Chat session not found' });
+    }
+    const { messages } = req.body as { messages: { role: string; content: string; usage?: any }[] };
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: 'messages array is required' });
+    }
+    for (const msg of messages) {
+      addChatMessage({
+        session_id: req.params.id as string,
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content,
+        input_tokens: msg.usage?.input_tokens,
+        output_tokens: msg.usage?.output_tokens,
+        cache_creation_input_tokens: msg.usage?.cache_creation_input_tokens,
+        cache_read_input_tokens: msg.usage?.cache_read_input_tokens,
+        estimated_cost: msg.usage?.estimated_cost,
+        model: msg.usage?.model,
+      });
+    }
+    res.status(201).json({ success: true, count: messages.length });
+  } catch (error) {
+    console.error('Failed to add chat messages:', error);
+    res.status(500).json({ error: 'Failed to add chat messages' });
+  }
+});
+
+// DELETE /api/chat/sessions/:id - Delete a chat session
+router.delete('/sessions/:id', (req: Request, res: Response) => {
+  try {
+    dbDeleteChatSession(req.params.id as string);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Failed to delete chat session:', error);
+    res.status(500).json({ error: 'Failed to delete chat session' });
+  }
+});
+
+// DELETE /api/chat/sessions/paper/:arxivId - Delete all sessions for a paper
+router.delete('/sessions/paper/:arxivId', (req: Request, res: Response) => {
+  try {
+    deleteChatSessionsByArxivId(req.params.arxivId as string);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Failed to delete paper chat sessions:', error);
+    res.status(500).json({ error: 'Failed to delete chat sessions' });
   }
 });
 

@@ -85,6 +85,43 @@ export function initializeDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_paper_tags_tag_id ON paper_tags(tag_id);
     CREATE INDEX IF NOT EXISTS idx_worldline_papers_worldline ON worldline_papers(worldline_id);
     CREATE INDEX IF NOT EXISTS idx_worldline_papers_paper ON worldline_papers(paper_id);
+
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id TEXT PRIMARY KEY,
+      arxiv_id TEXT,
+      paper_title TEXT,
+      worldline_id INTEGER,
+      worldline_name TEXT,
+      session_type TEXT NOT NULL DEFAULT 'paper' CHECK(session_type IN ('paper', 'worldline')),
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (worldline_id) REFERENCES worldlines(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+      content TEXT NOT NULL,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_creation_input_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      estimated_cost REAL,
+      model TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_sessions_arxiv_id ON chat_sessions(arxiv_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_sessions_worldline_id ON chat_sessions(worldline_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_sessions_type ON chat_sessions(session_type);
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
   `);
 
   // Migration: add pdf_path column if it doesn't exist
@@ -381,6 +418,130 @@ export function bulkRemovePaperTag(paperIds: number[], tagId: number) {
   if (paperIds.length === 0) return { changes: 0 };
   const placeholders = paperIds.map(() => '?').join(',');
   return db.prepare(`DELETE FROM paper_tags WHERE tag_id = ? AND paper_id IN (${placeholders})`).run(tagId, ...paperIds);
+}
+
+// Chat session operations
+export function createChatSession(session: {
+  id: string;
+  arxiv_id?: string;
+  paper_title?: string;
+  worldline_id?: number;
+  worldline_name?: string;
+  session_type: 'paper' | 'worldline';
+  created_at?: string;
+  updated_at?: string;
+}) {
+  return db.prepare(`
+    INSERT INTO chat_sessions (id, arxiv_id, paper_title, worldline_id, worldline_name, session_type, created_at, updated_at)
+    VALUES (@id, @arxiv_id, @paper_title, @worldline_id, @worldline_name, @session_type, @created_at, @updated_at)
+  `).run({
+    id: session.id,
+    arxiv_id: session.arxiv_id ?? null,
+    paper_title: session.paper_title ?? null,
+    worldline_id: session.worldline_id ?? null,
+    worldline_name: session.worldline_name ?? null,
+    session_type: session.session_type,
+    created_at: session.created_at ?? new Date().toISOString(),
+    updated_at: session.updated_at ?? new Date().toISOString(),
+  });
+}
+
+export function getChatSession(id: string) {
+  return db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id);
+}
+
+export function getChatSessionsByArxivId(arxivId: string) {
+  return db.prepare(
+    'SELECT * FROM chat_sessions WHERE arxiv_id = ? AND session_type = ? ORDER BY updated_at DESC'
+  ).all(arxivId, 'paper');
+}
+
+export function getChatSessionsByWorldlineId(worldlineId: number) {
+  return db.prepare(
+    'SELECT * FROM chat_sessions WHERE worldline_id = ? AND session_type = ? ORDER BY updated_at DESC'
+  ).all(worldlineId, 'worldline');
+}
+
+export function getAllChatSessions() {
+  return db.prepare(
+    'SELECT * FROM chat_sessions WHERE session_type = ? ORDER BY updated_at DESC'
+  ).all('paper');
+}
+
+export function updateChatSessionTimestamp(id: string) {
+  return db.prepare(
+    "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?"
+  ).run(id);
+}
+
+export function deleteChatSession(id: string) {
+  return db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(id);
+}
+
+export function deleteChatSessionsByArxivId(arxivId: string) {
+  return db.prepare('DELETE FROM chat_sessions WHERE arxiv_id = ? AND session_type = ?').run(arxivId, 'paper');
+}
+
+// Chat message operations
+export function addChatMessage(message: {
+  session_id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  estimated_cost?: number;
+  model?: string;
+}) {
+  const result = db.prepare(`
+    INSERT INTO chat_messages (session_id, role, content, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, estimated_cost, model)
+    VALUES (@session_id, @role, @content, @input_tokens, @output_tokens, @cache_creation_input_tokens, @cache_read_input_tokens, @estimated_cost, @model)
+  `).run({
+    session_id: message.session_id,
+    role: message.role,
+    content: message.content,
+    input_tokens: message.input_tokens ?? null,
+    output_tokens: message.output_tokens ?? null,
+    cache_creation_input_tokens: message.cache_creation_input_tokens ?? null,
+    cache_read_input_tokens: message.cache_read_input_tokens ?? null,
+    estimated_cost: message.estimated_cost ?? null,
+    model: message.model ?? null,
+  });
+  // Update session timestamp
+  db.prepare("UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?").run(message.session_id);
+  return result;
+}
+
+export function getChatMessages(sessionId: string) {
+  return db.prepare(
+    'SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id ASC'
+  ).all(sessionId);
+}
+
+// Settings operations
+export function getSetting(key: string): string | undefined {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+  return row?.value;
+}
+
+export function setSetting(key: string, value: string) {
+  return db.prepare(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+  ).run(key, value);
+}
+
+export function getAllSettings(): Record<string, string> {
+  const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
+  const result: Record<string, string> = {};
+  for (const row of rows) {
+    result[row.key] = row.value;
+  }
+  return result;
+}
+
+export function deleteSetting(key: string) {
+  return db.prepare('DELETE FROM settings WHERE key = ?').run(key);
 }
 
 export default db;

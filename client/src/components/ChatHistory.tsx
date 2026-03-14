@@ -15,20 +15,25 @@ export default function ChatHistory({ savedPapers, onOpenPaper, showNotification
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
+  const loadSessions = async () => {
+    const all = await api.getAllChatSessions();
+    setSessions(all);
+  };
+
   useEffect(() => {
-    setSessions(api.getAllChatSessions());
+    loadSessions();
   }, []);
 
-  const handleDelete = (sessionId: string) => {
-    api.deleteChatSession(sessionId);
-    setSessions(api.getAllChatSessions());
+  const handleDelete = async (sessionId: string) => {
+    await api.deleteChatSession(sessionId);
+    await loadSessions();
     if (expandedId === sessionId) setExpandedId(null);
     showNotification('Chat session deleted');
   };
 
-  const handleDeleteAllForPaper = (arxivId: string) => {
-    api.deleteAllChatSessionsForPaper(arxivId);
-    setSessions(api.getAllChatSessions());
+  const handleDeleteAllForPaper = async (arxivId: string) => {
+    await api.deleteAllChatSessionsForPaper(arxivId);
+    await loadSessions();
     setExpandedId(null);
     showNotification('All chat sessions for this paper deleted');
   };
