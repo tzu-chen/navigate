@@ -104,3 +104,117 @@ export function generatePaperpileMetadata(
     journal: paper.journal_ref || `arXiv:${paper.arxiv_id}`,
   };
 }
+
+export interface ParsedBibtexEntry {
+  arxiv_id: string;
+  title: string;
+  authors: string[];
+  year: number;
+  summary: string;
+  categories: string[];
+  url: string;
+  doi?: string;
+  journal_ref?: string;
+  keywords: string[];
+  notes: Array<{ content: string; page_number?: number }>;
+}
+
+/**
+ * Parse a BibTeX string into structured entries.
+ * Designed to round-trip with generateBibtex output.
+ */
+export function parseBibtex(bibtex: string): ParsedBibtexEntry[] {
+  const entries: ParsedBibtexEntry[] = [];
+
+  // Match each @type{key, ... } entry, handling nested braces
+  const entryStarts = [...bibtex.matchAll(/@\w+\s*\{/g)];
+  for (const match of entryStarts) {
+    const startIdx = match.index!;
+    let depth = 0;
+    let endIdx = startIdx;
+    for (let i = startIdx; i < bibtex.length; i++) {
+      if (bibtex[i] === '{') depth++;
+      else if (bibtex[i] === '}') {
+        depth--;
+        if (depth === 0) { endIdx = i; break; }
+      }
+    }
+    const entryStr = bibtex.slice(startIdx, endIdx + 1);
+    const fields = parseBibtexFields(entryStr);
+
+    const arxivId = fields['eprint'] || '';
+    if (!arxivId) continue;
+
+    const authors = (fields['author'] || '')
+      .split(/\s+and\s+/)
+      .map(a => a.trim())
+      .filter(a => a.length > 0);
+
+    const year = parseInt(fields['year'] || '0', 10);
+    const primaryClass = fields['primaryclass'] || '';
+
+    // Parse keywords (tags)
+    const keywords = (fields['keywords'] || '')
+      .split(',')
+      .map(k => k.trim())
+      .filter(k => k.length > 0);
+
+    // Parse notes (comments) - format: "content [p.N]; content2 [p.M]"
+    const notes: Array<{ content: string; page_number?: number }> = [];
+    const noteStr = fields['note'] || '';
+    if (noteStr) {
+      const noteParts = noteStr.split(';').map(s => s.trim()).filter(s => s.length > 0);
+      for (const part of noteParts) {
+        const pageMatch = part.match(/^(.*?)\s*\[p\.(\d+)\]\s*$/);
+        if (pageMatch) {
+          notes.push({ content: pageMatch[1].trim(), page_number: parseInt(pageMatch[2], 10) });
+        } else {
+          notes.push({ content: part });
+        }
+      }
+    }
+
+    entries.push({
+      arxiv_id: arxivId,
+      title: fields['title'] || '',
+      authors,
+      year,
+      summary: fields['abstract'] || '',
+      categories: primaryClass ? [primaryClass] : [],
+      url: fields['url'] || `https://arxiv.org/abs/${arxivId}`,
+      doi: fields['doi'],
+      journal_ref: fields['journal'],
+      keywords,
+      notes,
+    });
+  }
+
+  return entries;
+}
+
+function parseBibtexFields(entry: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  // Remove the @type{key, header
+  const headerEnd = entry.indexOf(',');
+  if (headerEnd === -1) return fields;
+  const body = entry.slice(headerEnd + 1, entry.length - 1);
+
+  // Parse field = {value} pairs, handling nested braces
+  const fieldRegex = /(\w+)\s*=\s*\{/g;
+  let fieldMatch;
+  while ((fieldMatch = fieldRegex.exec(body)) !== null) {
+    const fieldName = fieldMatch[1].toLowerCase();
+    const valueStart = fieldMatch.index + fieldMatch[0].length;
+    let depth = 1;
+    let valueEnd = valueStart;
+    for (let i = valueStart; i < body.length; i++) {
+      if (body[i] === '{') depth++;
+      else if (body[i] === '}') {
+        depth--;
+        if (depth === 0) { valueEnd = i; break; }
+      }
+    }
+    fields[fieldName] = body.slice(valueStart, valueEnd);
+  }
+  return fields;
+}

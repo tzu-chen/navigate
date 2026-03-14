@@ -257,6 +257,20 @@ export async function markExported(paperId: number): Promise<void> {
   await request(`/export/mark-exported/${paperId}`, { method: 'POST' });
 }
 
+export async function importBibtex(bibtex: string): Promise<{
+  papers_added: number;
+  papers_skipped: number;
+  tags_applied: number;
+  comments_added: number;
+  total_entries: number;
+  errors: string[];
+}> {
+  return request('/export/import-bibtex', {
+    method: 'POST',
+    body: JSON.stringify({ bibtex }),
+  });
+}
+
 // Favorite Authors
 export async function getFavoriteAuthors(): Promise<FavoriteAuthor[]> {
   return request('/authors/favorites');

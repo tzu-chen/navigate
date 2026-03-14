@@ -44,6 +44,11 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
   // Batch import state
   const [showBatchImport, setShowBatchImport] = useState(false);
 
+  // BibTeX import state
+  const [showBibtexImport, setShowBibtexImport] = useState(false);
+  const [bibtexText, setBibtexText] = useState('');
+  const [bibtexImporting, setBibtexImporting] = useState(false);
+
   // Bulk selection state
   const [selectedPaperIds, setSelectedPaperIds] = useState<Set<number>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
@@ -264,6 +269,45 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
     }
   }
 
+  async function handleBibtexImport() {
+    if (!bibtexText.trim()) {
+      showNotification('Paste or load a BibTeX file first');
+      return;
+    }
+    setBibtexImporting(true);
+    try {
+      const result = await api.importBibtex(bibtexText);
+      const parts: string[] = [];
+      parts.push(`${result.papers_added} added`);
+      if (result.papers_skipped > 0) parts.push(`${result.papers_skipped} already in library`);
+      if (result.tags_applied > 0) parts.push(`${result.tags_applied} tag assignments`);
+      if (result.comments_added > 0) parts.push(`${result.comments_added} comments restored`);
+      if (result.errors.length > 0) parts.push(`${result.errors.length} errors`);
+      showNotification(`BibTeX import: ${parts.join(', ')}`);
+      if (result.errors.length > 0) {
+        console.warn('BibTeX import errors:', result.errors);
+      }
+      setBibtexText('');
+      setShowBibtexImport(false);
+      await onRefresh();
+    } catch (err: any) {
+      showNotification(err.message || 'BibTeX import failed');
+    } finally {
+      setBibtexImporting(false);
+    }
+  }
+
+  function handleBibtexFileLoad(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setBibtexText(reader.result as string);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }
+
   const hasActiveFilters = filterStatus !== '' || filterTag !== null || filterWorldline !== null || searchTerm !== '';
 
 
@@ -308,6 +352,15 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
               onClick={() => setShowBatchImport(!showBatchImport)}
             >
               Batch Import
+            </button>
+          </div>
+
+          <div className="control-group">
+            <button
+              className={`btn btn-sm ${showBibtexImport ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setShowBibtexImport(!showBibtexImport)}
+            >
+              Import BibTeX
             </button>
           </div>
 
@@ -408,6 +461,46 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
           showNotification={showNotification}
           onImportComplete={onRefresh}
         />
+      )}
+
+      {showBibtexImport && (
+        <div className="batch-import-section">
+          <h3>Import BibTeX</h3>
+          <p className="batch-import-hint">
+            Paste BibTeX entries below or load a .bib file. Papers with ArXiv eprint fields will be imported into your library with their tags and comments preserved.
+          </p>
+          <div className="batch-import-body">
+            <div className="batch-import-left" style={{ flex: 1 }}>
+              <textarea
+                className="batch-import-textarea"
+                placeholder={"@article{key,\n  author = {Author Name},\n  title = {Paper Title},\n  eprint = {2301.00001},\n  ...\n}"}
+                value={bibtexText}
+                onChange={e => setBibtexText(e.target.value)}
+                rows={8}
+                disabled={bibtexImporting}
+              />
+            </div>
+            <div className="batch-import-right">
+              <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer', display: 'inline-block' }}>
+                Load .bib File
+                <input
+                  type="file"
+                  accept=".bib,.bibtex,text/plain"
+                  onChange={handleBibtexFileLoad}
+                  style={{ display: 'none' }}
+                  disabled={bibtexImporting}
+                />
+              </label>
+              <button
+                className="btn btn-primary batch-import-submit"
+                onClick={handleBibtexImport}
+                disabled={bibtexImporting || !bibtexText.trim()}
+              >
+                {bibtexImporting ? 'Importing...' : 'Import'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Bulk operations toolbar */}
