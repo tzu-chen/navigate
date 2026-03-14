@@ -28,13 +28,14 @@ export default function ChatPanel({ paper, showNotification }: Props) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [showSessionList, setShowSessionList] = useState(false);
+  const [hasApiKey, setHasApiKey] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const authors = JSON.parse(paper.authors) as string[];
   const categories = JSON.parse(paper.categories) as string[];
 
-  const loadSessions = useCallback(() => {
-    const paperSessions = api.getChatSessionsForPaper(paper.arxiv_id);
+  const loadSessions = useCallback(async () => {
+    const paperSessions = await api.getChatSessionsForPaper(paper.arxiv_id);
     setSessions(paperSessions);
     return paperSessions;
   }, [paper.arxiv_id]);
@@ -45,7 +46,7 @@ export default function ChatPanel({ paper, showNotification }: Props) {
       const relatedPapers = await api.getRelatedPaperArxivIds(paper.arxiv_id);
       const results: RelatedPaperSessions[] = [];
       for (const rp of relatedPapers) {
-        const rpSessions = api.getChatSessionsForPaper(rp.arxivId);
+        const rpSessions = await api.getChatSessionsForPaper(rp.arxivId);
         if (rpSessions.length > 0) {
           results.push({ arxivId: rp.arxivId, title: rp.title, sessions: rpSessions });
         }
@@ -58,21 +59,26 @@ export default function ChatPanel({ paper, showNotification }: Props) {
 
   // Load sessions on mount; resume the most recent one if it exists
   useEffect(() => {
-    const paperSessions = loadSessions();
-    if (paperSessions.length > 0) {
-      setActiveSessionId(paperSessions[0].id);
-      setMessages(paperSessions[0].messages);
-    }
-    loadRelatedSessions();
+    (async () => {
+      const paperSessions = await loadSessions();
+      if (paperSessions.length > 0) {
+        setActiveSessionId(paperSessions[0].id);
+        setMessages(paperSessions[0].messages);
+      }
+      loadRelatedSessions();
+      // Check API key
+      const settings = await api.getSettings();
+      setHasApiKey(!!settings.claudeApiKey);
+    })();
   }, [loadSessions, loadRelatedSessions]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const persistSession = useCallback((sessionMessages: ChatMessage[], sessionId: string | null) => {
+  const persistSession = useCallback(async (sessionMessages: ChatMessage[], sessionId: string | null) => {
     if (!sessionId || sessionMessages.length === 0) return;
-    const existing = api.getChatSession(sessionId);
+    const existing = await api.getChatSession(sessionId);
     const session: ChatSession = {
       id: sessionId,
       arxivId: paper.arxiv_id,
@@ -81,15 +87,15 @@ export default function ChatPanel({ paper, showNotification }: Props) {
       createdAt: existing?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    api.saveChatSession(session);
-    loadSessions();
+    await api.saveChatSession(session);
+    await loadSessions();
   }, [paper.arxiv_id, paper.title, loadSessions]);
 
   const handleSend = async () => {
     const trimmed = input.trim();
     if (!trimmed || loading) return;
 
-    const settings = api.getSettings();
+    const settings = await api.getSettings();
     if (!settings.claudeApiKey) {
       showNotification('Please set your Claude API key in Settings first.');
       return;
@@ -146,12 +152,12 @@ export default function ChatPanel({ paper, showNotification }: Props) {
 
       const withResponse = [...updatedMessages, assistantMessage];
       setMessages(withResponse);
-      persistSession(withResponse, currentSessionId);
+      await persistSession(withResponse, currentSessionId);
     } catch (err: any) {
       showNotification(err.message || 'Failed to get response from Claude');
       const withError = [...updatedMessages, { role: 'assistant' as const, content: 'Error: Failed to get a response. Please check your API key in Settings.' }];
       setMessages(withError);
-      persistSession(withError, currentSessionId);
+      await persistSession(withError, currentSessionId);
     } finally {
       setLoading(false);
     }
@@ -186,10 +192,10 @@ export default function ChatPanel({ paper, showNotification }: Props) {
     setShowSessionList(false);
   };
 
-  const handleBackFromRelated = () => {
+  const handleBackFromRelated = async () => {
     setViewingRelatedSession(null);
     // Restore to current paper's most recent session
-    const paperSessions = loadSessions();
+    const paperSessions = await loadSessions();
     if (paperSessions.length > 0) {
       setActiveSessionId(paperSessions[0].id);
       setMessages(paperSessions[0].messages);
@@ -200,10 +206,10 @@ export default function ChatPanel({ paper, showNotification }: Props) {
 
   const totalRelatedSessionCount = relatedPaperSessions.reduce((sum, rp) => sum + rp.sessions.length, 0);
 
-  const handleDeleteSession = (sessionId: string, e: React.MouseEvent) => {
+  const handleDeleteSession = async (sessionId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    api.deleteChatSession(sessionId);
-    const updated = loadSessions();
+    await api.deleteChatSession(sessionId);
+    const updated = await loadSessions();
     if (sessionId === activeSessionId) {
       if (updated.length > 0) {
         setActiveSessionId(updated[0].id);
@@ -214,8 +220,6 @@ export default function ChatPanel({ paper, showNotification }: Props) {
       }
     }
   };
-
-  const hasApiKey = !!api.getSettings().claudeApiKey;
 
   const firstUserMsg = (s: ChatSession) => {
     const first = s.messages.find(m => m.role === 'user');

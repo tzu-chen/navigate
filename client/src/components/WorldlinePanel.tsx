@@ -58,6 +58,7 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
   const [wlChatSessionId, setWlChatSessionId] = useState<string | null>(null);
   const [wlChatSessions, setWlChatSessions] = useState<WorldlineChatSession[]>([]);
   const [wlChatShowHistory, setWlChatShowHistory] = useState(false);
+  const [wlHasApiKey, setWlHasApiKey] = useState(false);
   const wlChatEndRef = useRef<HTMLDivElement>(null);
 
   // Collapsible sections
@@ -580,16 +581,23 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
     }
   };
 
+  // Check API key on mount
+  useEffect(() => {
+    api.getSettings().then(s => setWlHasApiKey(!!s.claudeApiKey)).catch(() => {});
+  }, []);
+
   // Load worldline chat sessions when active worldline changes
   useEffect(() => {
     if (activeWorldlineId !== null) {
-      const sessions = api.getWorldlineChatSessions(activeWorldlineId);
-      setWlChatSessions(sessions);
-      // Resume most recent session if available
-      if (sessions.length > 0 && !wlChatSessionId) {
-        setWlChatSessionId(sessions[0].id);
-        setWlChatMessages(sessions[0].messages);
-      }
+      (async () => {
+        const sessions = await api.getWorldlineChatSessions(activeWorldlineId);
+        setWlChatSessions(sessions);
+        // Resume most recent session if available
+        if (sessions.length > 0 && !wlChatSessionId) {
+          setWlChatSessionId(sessions[0].id);
+          setWlChatMessages(sessions[0].messages);
+        }
+      })();
     } else {
       setWlChatOpen(false);
       setWlChatMessages([]);
@@ -609,11 +617,11 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   };
 
-  const persistWlChatSession = useCallback((sessionMessages: ChatMessage[], sessionId: string | null) => {
+  const persistWlChatSession = useCallback(async (sessionMessages: ChatMessage[], sessionId: string | null) => {
     if (!sessionId || sessionMessages.length === 0 || activeWorldlineId === null) return;
     const wl = worldlines.find(w => w.id === activeWorldlineId);
     if (!wl) return;
-    const existing = api.getWorldlineChatSession(sessionId);
+    const existing = await api.getWorldlineChatSession(sessionId);
     const session: WorldlineChatSession = {
       id: sessionId,
       worldlineId: activeWorldlineId,
@@ -622,15 +630,16 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
       createdAt: existing?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    api.saveWorldlineChatSession(session);
-    setWlChatSessions(api.getWorldlineChatSessions(activeWorldlineId));
+    await api.saveWorldlineChatSession(session);
+    const updated = await api.getWorldlineChatSessions(activeWorldlineId);
+    setWlChatSessions(updated);
   }, [activeWorldlineId, worldlines]);
 
   const handleWlChatSend = async () => {
     const trimmed = wlChatInput.trim();
     if (!trimmed || wlChatLoading || activeWorldlineId === null) return;
 
-    const settings = api.getSettings();
+    const settings = await api.getSettings();
     if (!settings.claudeApiKey) {
       showNotification('Please set your Claude API key in Settings first.');
       return;
@@ -690,12 +699,12 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
 
       const withResponse = [...updatedMessages, assistantMessage];
       setWlChatMessages(withResponse);
-      persistWlChatSession(withResponse, currentSessionId);
+      await persistWlChatSession(withResponse, currentSessionId);
     } catch (err: any) {
       showNotification(err.message || 'Failed to get response from Claude');
       const withError = [...updatedMessages, { role: 'assistant' as const, content: 'Error: Failed to get a response. Please check your API key in Settings.' }];
       setWlChatMessages(withError);
-      persistWlChatSession(withError, currentSessionId);
+      await persistWlChatSession(withError, currentSessionId);
     } finally {
       setWlChatLoading(false);
     }
@@ -721,11 +730,11 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
     setWlChatShowHistory(false);
   };
 
-  const handleWlDeleteSession = (sessionId: string, e: React.MouseEvent) => {
+  const handleWlDeleteSession = async (sessionId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    api.deleteWorldlineChatSession(sessionId);
+    await api.deleteWorldlineChatSession(sessionId);
     if (activeWorldlineId !== null) {
-      const updated = api.getWorldlineChatSessions(activeWorldlineId);
+      const updated = await api.getWorldlineChatSessions(activeWorldlineId);
       setWlChatSessions(updated);
       if (sessionId === wlChatSessionId) {
         if (updated.length > 0) {
@@ -984,7 +993,7 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
                   <h4>Chat: {activeWorldline.name}</h4>
                 </div>
 
-                {!api.getSettings().claudeApiKey && (
+                {!wlHasApiKey && (
                   <div className="wl-chat-no-key">
                     Set your Claude API key in Settings to use chat.
                   </div>
@@ -1030,7 +1039,7 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
                 )}
 
                 <div className="wl-chat-messages">
-                  {wlChatMessages.length === 0 && api.getSettings().claudeApiKey && (
+                  {wlChatMessages.length === 0 && wlHasApiKey && (
                     <div className="wl-chat-welcome">
                       <p>Ask Claude about this worldline. Examples:</p>
                       <ul>
@@ -1085,14 +1094,14 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
                     value={wlChatInput}
                     onChange={e => setWlChatInput(e.target.value)}
                     onKeyDown={handleWlChatKeyDown}
-                    placeholder={api.getSettings().claudeApiKey ? 'Ask about this worldline...' : 'Set API key in Settings first'}
+                    placeholder={wlHasApiKey ? 'Ask about this worldline...' : 'Set API key in Settings first'}
                     rows={2}
-                    disabled={!api.getSettings().claudeApiKey || wlChatLoading}
+                    disabled={!wlHasApiKey || wlChatLoading}
                   />
                   <button
                     className="btn btn-primary btn-sm"
                     onClick={handleWlChatSend}
-                    disabled={!wlChatInput.trim() || wlChatLoading || !api.getSettings().claudeApiKey}
+                    disabled={!wlChatInput.trim() || wlChatLoading || !wlHasApiKey}
                   >
                     Send
                   </button>

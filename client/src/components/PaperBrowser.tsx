@@ -73,13 +73,13 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
     const controller = new AbortController();
     similarityAbortRef.current = controller;
 
-    const settings = api.getSettings();
-
     setScanningWorldlines(true);
-    api.checkWorldlineSimilarity(
-      papers.map(p => ({ id: p.id, title: p.title, summary: p.summary })),
-      settings.similarityThreshold
-    ).then(results => {
+    api.getSettings().then(settings => {
+      return api.checkWorldlineSimilarity(
+        papers.map(p => ({ id: p.id, title: p.title, summary: p.summary })),
+        settings.similarityThreshold
+      );
+    }).then(results => {
       if (controller.signal.aborted) return;
       const map = new Map<string, WorldlineSimilarityMatch[]>();
       for (const r of results) {

@@ -342,45 +342,62 @@ export async function sendWorldlineChatMessage(
   });
 }
 
-// Worldline Chat History (localStorage)
-const WL_CHAT_HISTORY_KEY = 'paperpile-navigate-worldline-chat-history';
+// Worldline Chat History (server-side)
+export async function getWorldlineChatSessions(worldlineId: number): Promise<WorldlineChatSession[]> {
+  const sessions = await request<any[]>(`/chat/sessions/worldline/${worldlineId}`);
+  return sessions.map(s => ({
+    id: s.id,
+    worldlineId: s.worldline_id,
+    worldlineName: s.worldline_name,
+    messages: s.messages,
+    createdAt: s.created_at,
+    updatedAt: s.updated_at,
+  }));
+}
 
-function loadAllWorldlineSessions(): WorldlineChatSession[] {
+export async function getWorldlineChatSession(sessionId: string): Promise<WorldlineChatSession | undefined> {
   try {
-    const stored = localStorage.getItem(WL_CHAT_HISTORY_KEY);
-    if (stored) return JSON.parse(stored);
-  } catch {}
-  return [];
-}
-
-function persistAllWorldlineSessions(sessions: WorldlineChatSession[]): void {
-  localStorage.setItem(WL_CHAT_HISTORY_KEY, JSON.stringify(sessions));
-}
-
-export function getWorldlineChatSessions(worldlineId: number): WorldlineChatSession[] {
-  return loadAllWorldlineSessions()
-    .filter(s => s.worldlineId === worldlineId)
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-}
-
-export function getWorldlineChatSession(sessionId: string): WorldlineChatSession | undefined {
-  return loadAllWorldlineSessions().find(s => s.id === sessionId);
-}
-
-export function saveWorldlineChatSession(session: WorldlineChatSession): void {
-  const sessions = loadAllWorldlineSessions();
-  const idx = sessions.findIndex(s => s.id === session.id);
-  if (idx >= 0) {
-    sessions[idx] = session;
-  } else {
-    sessions.push(session);
+    const s = await request<any>(`/chat/sessions/${sessionId}`);
+    return {
+      id: s.id,
+      worldlineId: s.worldline_id,
+      worldlineName: s.worldline_name,
+      messages: s.messages,
+      createdAt: s.created_at,
+      updatedAt: s.updated_at,
+    };
+  } catch {
+    return undefined;
   }
-  persistAllWorldlineSessions(sessions);
 }
 
-export function deleteWorldlineChatSession(sessionId: string): void {
-  const sessions = loadAllWorldlineSessions().filter(s => s.id !== sessionId);
-  persistAllWorldlineSessions(sessions);
+export async function saveWorldlineChatSession(session: WorldlineChatSession): Promise<void> {
+  // Check if session exists; if not, create it
+  const existing = await getWorldlineChatSession(session.id);
+  if (!existing) {
+    await request('/chat/sessions', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: session.id,
+        worldline_id: session.worldlineId,
+        worldline_name: session.worldlineName,
+        session_type: 'worldline',
+      }),
+    });
+  }
+  // Add new messages (server stores them incrementally)
+  const existingCount = existing?.messages?.length ?? 0;
+  const newMessages = session.messages.slice(existingCount);
+  if (newMessages.length > 0) {
+    await request(`/chat/sessions/${session.id}/messages/batch`, {
+      method: 'POST',
+      body: JSON.stringify({ messages: newMessages }),
+    });
+  }
+}
+
+export async function deleteWorldlineChatSession(sessionId: string): Promise<void> {
+  await request(`/chat/sessions/${sessionId}`, { method: 'DELETE' });
 }
 
 // Worldlines
@@ -469,8 +486,10 @@ export async function checkWorldlineSimilarity(
   return data.results;
 }
 
-// Settings (localStorage)
-const SETTINGS_KEY = 'paperpile-navigate-settings';
+// Settings
+// Server-side: claudeApiKey, similarityThreshold
+// Client-side (localStorage): colorScheme, cardFontSize (visual preferences)
+const VISUAL_PREFS_KEY = 'paperpile-navigate-visual-prefs';
 
 export interface AppSettings {
   claudeApiKey: string;
@@ -486,16 +505,56 @@ const DEFAULT_SETTINGS: AppSettings = {
   cardFontSize: 'medium',
 };
 
-export function getSettings(): AppSettings {
-  try {
-    const stored = localStorage.getItem(SETTINGS_KEY);
-    if (stored) return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
-  } catch {}
-  return { ...DEFAULT_SETTINGS };
+interface VisualPrefs {
+  colorScheme: string;
+  cardFontSize: 'small' | 'medium' | 'large';
 }
 
-export function saveSettings(settings: AppSettings): void {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+function getVisualPrefs(): VisualPrefs {
+  try {
+    const stored = localStorage.getItem(VISUAL_PREFS_KEY);
+    if (stored) return { colorScheme: 'default-dark', cardFontSize: 'medium', ...JSON.parse(stored) };
+  } catch {}
+  return { colorScheme: 'default-dark', cardFontSize: 'medium' };
+}
+
+function saveVisualPrefs(prefs: VisualPrefs): void {
+  localStorage.setItem(VISUAL_PREFS_KEY, JSON.stringify(prefs));
+}
+
+export async function getSettings(): Promise<AppSettings> {
+  const visualPrefs = getVisualPrefs();
+  try {
+    const serverSettings = await request<Record<string, string>>('/settings');
+    return {
+      claudeApiKey: serverSettings.claudeApiKey || '',
+      similarityThreshold: serverSettings.similarityThreshold
+        ? parseFloat(serverSettings.similarityThreshold)
+        : DEFAULT_SETTINGS.similarityThreshold,
+      colorScheme: visualPrefs.colorScheme,
+      cardFontSize: visualPrefs.cardFontSize,
+    };
+  } catch {
+    return { ...DEFAULT_SETTINGS, ...visualPrefs };
+  }
+}
+
+export async function saveSettings(settings: AppSettings): Promise<void> {
+  // Save visual prefs to localStorage
+  saveVisualPrefs({ colorScheme: settings.colorScheme, cardFontSize: settings.cardFontSize });
+  // Save data settings to server
+  await request('/settings', {
+    method: 'PUT',
+    body: JSON.stringify({
+      claudeApiKey: settings.claudeApiKey,
+      similarityThreshold: String(settings.similarityThreshold),
+    }),
+  });
+}
+
+// Synchronous getter for visual prefs only (used during initial render)
+export function getVisualPrefsSync(): VisualPrefs {
+  return getVisualPrefs();
 }
 
 const FONT_SIZE_SCALES: Record<AppSettings['cardFontSize'], string> = {
@@ -508,54 +567,66 @@ export function applyCardFontSize(size: AppSettings['cardFontSize']): void {
   document.documentElement.style.setProperty('--card-font-scale', FONT_SIZE_SCALES[size] || '1');
 }
 
-// Chat History (localStorage)
-const CHAT_HISTORY_KEY = 'paperpile-navigate-chat-history';
+// Chat History (server-side)
+function mapServerChatSession(s: any): ChatSession {
+  return {
+    id: s.id,
+    arxivId: s.arxiv_id,
+    paperTitle: s.paper_title,
+    messages: s.messages,
+    createdAt: s.created_at,
+    updatedAt: s.updated_at,
+  };
+}
 
-function loadAllSessions(): ChatSession[] {
+export async function getAllChatSessions(): Promise<ChatSession[]> {
+  const sessions = await request<any[]>('/chat/sessions');
+  return sessions.map(mapServerChatSession);
+}
+
+export async function getChatSessionsForPaper(arxivId: string): Promise<ChatSession[]> {
+  const sessions = await request<any[]>(`/chat/sessions/paper/${encodeURIComponent(arxivId)}`);
+  return sessions.map(mapServerChatSession);
+}
+
+export async function getChatSession(sessionId: string): Promise<ChatSession | undefined> {
   try {
-    const stored = localStorage.getItem(CHAT_HISTORY_KEY);
-    if (stored) return JSON.parse(stored);
-  } catch {}
-  return [];
-}
-
-function persistAllSessions(sessions: ChatSession[]): void {
-  localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(sessions));
-}
-
-export function getAllChatSessions(): ChatSession[] {
-  return loadAllSessions().sort(
-    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-  );
-}
-
-export function getChatSessionsForPaper(arxivId: string): ChatSession[] {
-  return loadAllSessions()
-    .filter(s => s.arxivId === arxivId)
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-}
-
-export function getChatSession(sessionId: string): ChatSession | undefined {
-  return loadAllSessions().find(s => s.id === sessionId);
-}
-
-export function saveChatSession(session: ChatSession): void {
-  const sessions = loadAllSessions();
-  const idx = sessions.findIndex(s => s.id === session.id);
-  if (idx >= 0) {
-    sessions[idx] = session;
-  } else {
-    sessions.push(session);
+    const s = await request<any>(`/chat/sessions/${sessionId}`);
+    return mapServerChatSession(s);
+  } catch {
+    return undefined;
   }
-  persistAllSessions(sessions);
 }
 
-export function deleteChatSession(sessionId: string): void {
-  const sessions = loadAllSessions().filter(s => s.id !== sessionId);
-  persistAllSessions(sessions);
+export async function saveChatSession(session: ChatSession): Promise<void> {
+  // Check if session exists; if not, create it
+  const existing = await getChatSession(session.id);
+  if (!existing) {
+    await request('/chat/sessions', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: session.id,
+        arxiv_id: session.arxivId,
+        paper_title: session.paperTitle,
+        session_type: 'paper',
+      }),
+    });
+  }
+  // Add new messages incrementally
+  const existingCount = existing?.messages?.length ?? 0;
+  const newMessages = session.messages.slice(existingCount);
+  if (newMessages.length > 0) {
+    await request(`/chat/sessions/${session.id}/messages/batch`, {
+      method: 'POST',
+      body: JSON.stringify({ messages: newMessages }),
+    });
+  }
 }
 
-export function deleteAllChatSessionsForPaper(arxivId: string): void {
-  const sessions = loadAllSessions().filter(s => s.arxivId !== arxivId);
-  persistAllSessions(sessions);
+export async function deleteChatSession(sessionId: string): Promise<void> {
+  await request(`/chat/sessions/${sessionId}`, { method: 'DELETE' });
+}
+
+export async function deleteAllChatSessionsForPaper(arxivId: string): Promise<void> {
+  await request(`/chat/sessions/paper/${encodeURIComponent(arxivId)}`, { method: 'DELETE' });
 }

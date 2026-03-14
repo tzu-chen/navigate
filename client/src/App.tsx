@@ -59,12 +59,13 @@ export default function App() {
   }, [loadLibrary, loadFavoriteAuthors]);
 
   useEffect(() => {
-    const settings = api.getSettings();
-    const scheme = getSchemeById(settings.colorScheme);
+    // Visual prefs are stored locally for instant theme application
+    const visualPrefs = api.getVisualPrefsSync();
+    const scheme = getSchemeById(visualPrefs.colorScheme);
     if (scheme) {
       applyColorScheme(scheme);
     }
-    api.applyCardFontSize(settings.cardFontSize);
+    api.applyCardFontSize(visualPrefs.cardFontSize);
   }, []);
 
   const favoriteAuthorNames = new Set(favoriteAuthors.map(a => a.name));
