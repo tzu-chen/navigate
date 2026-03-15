@@ -489,7 +489,7 @@ export async function checkWorldlineSimilarity(
 // Settings
 // Server-side: claudeApiKey, similarityThreshold
 // Client-side (localStorage): colorScheme, cardFontSize (visual preferences)
-const VISUAL_PREFS_KEY = 'paperpile-navigate-visual-prefs';
+const VISUAL_PREFS_KEY = 'navigate-visual-prefs';
 
 export interface AppSettings {
   claudeApiKey: string;

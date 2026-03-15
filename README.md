@@ -1,4 +1,4 @@
-# Paperpile Navigate
+# Navigate
 
 A full-stack research reference management system for browsing, organizing, and analyzing academic papers from ArXiv. Features AI-powered paper analysis via Claude, PDF viewing with inline comments, and BibTeX/Paperpile export.
 
@@ -38,8 +38,8 @@ A full-stack research reference management system for browsing, organizing, and 
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/tzu-chen/paperpile-navigate.git
-   cd paperpile-navigate
+   git clone https://github.com/tzu-chen/navigate.git
+   cd navigate
    ```
 
 2. **Install all dependencies** (root, server, and client):
@@ -92,7 +92,7 @@ The Express server serves both the API and the built frontend from `client/dist/
 ## Project Structure
 
 ```
-paperpile-navigate/
+navigate/
 ├── client/                 # React frontend (Vite)
 │   ├── src/
 │   │   ├── components/     # 17 UI components (PaperBrowser, Library, ChatPanel, etc.)
@@ -123,7 +123,7 @@ All persistent data is stored server-side in SQLite. The client communicates wit
 | Papers, comments, tags, authors, worldlines | Server (SQLite) | `/api/papers`, `/api/tags`, etc. |
 | Chat sessions and messages | Server (SQLite) | `/api/chat` |
 | Claude API key, similarity threshold | Server (SQLite `settings` table) | `/api/settings` |
-| Color scheme, font size | Client (localStorage) | `paperpile-navigate-visual-prefs` |
+| Color scheme, font size | Client (localStorage) | `navigate-visual-prefs` |
 
 ## License
 

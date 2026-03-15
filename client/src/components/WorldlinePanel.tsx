@@ -39,15 +39,15 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
 
   // Visibility toggles (persisted to localStorage)
   const [showWorldlines, setShowWorldlines] = useState<boolean>(() => {
-    try { const s = localStorage.getItem('paperpile-worldline-visibility'); if (s) { const v = JSON.parse(s); return v.showWorldlines ?? true; } } catch {} return true;
+    try { const s = localStorage.getItem('navigate-worldline-visibility'); if (s) { const v = JSON.parse(s); return v.showWorldlines ?? true; } } catch {} return true;
   });
   const [showNonWorldlinePapers, setShowNonWorldlinePapers] = useState<boolean>(() => {
-    try { const s = localStorage.getItem('paperpile-worldline-visibility'); if (s) { const v = JSON.parse(s); return v.showNonWorldlinePapers ?? true; } } catch {} return true;
+    try { const s = localStorage.getItem('navigate-worldline-visibility'); if (s) { const v = JSON.parse(s); return v.showNonWorldlinePapers ?? true; } } catch {} return true;
   });
 
   // Persist visibility toggles
   useEffect(() => {
-    localStorage.setItem('paperpile-worldline-visibility', JSON.stringify({ showWorldlines, showNonWorldlinePapers }));
+    localStorage.setItem('navigate-worldline-visibility', JSON.stringify({ showWorldlines, showNonWorldlinePapers }));
   }, [showWorldlines, showNonWorldlinePapers]);
 
   // Worldline chat

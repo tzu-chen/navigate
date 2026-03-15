@@ -1,5 +1,5 @@
 {
-  "name": "paperpile-navigate",
+  "name": "navigate",
   "version": "1.0.0",
   "description": "Research reference management system with ArXiv browsing, PDF viewing, commenting, tagging, and Paperpile export",
   "private": true,
