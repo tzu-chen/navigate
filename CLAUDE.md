@@ -21,6 +21,8 @@ The Vite dev server proxies `/api` requests to `http://localhost:3001`. No `.env
 
 Full-stack TypeScript app: React 18 + Vite frontend, Express + SQLite backend. Manages academic papers from ArXiv with AI-powered analysis via Claude API.
 
+**Historical note:** This project was originally a client-side-only React app with all data stored in localStorage. It was later migrated to a full-stack architecture with an Express backend and SQLite database. Most state now lives server-side, but a few visual preferences remain in localStorage (see Storage Split below). When working on features, always use the server-side API and database — do not add new localStorage usage for data that should be persistent or shared across sessions.
+
 ```
 paperpile-navigate/
 ├── package.json          # Root scripts (concurrently for dev, install:all)
@@ -36,9 +38,9 @@ paperpile-navigate/
 │   └── vite.config.ts            # Vite config with /api proxy to port 3001
 └── server/               # Express backend
     ├── src/
-    │   ├── index.ts              # Express entry point, mounts 7 route modules
+    │   ├── index.ts              # Express entry point, mounts 8 route modules
     │   ├── types.ts              # Mirrors client types + category constants
-    │   ├── routes/               # 7 RESTful route handlers
+    │   ├── routes/               # 8 RESTful route handlers
     │   └── services/             # Business logic (DB, ArXiv API, PDF, export, similarity)
     └── data/                     # Runtime data (gitignored)
         ├── papers.db             # SQLite database
@@ -66,13 +68,13 @@ paperpile-navigate/
   - `BatchImportPanel` — Bulk paper import with worldline/tag assignment
   - `ArxivRefreshTimer` — Countdown to next ArXiv announcement
   - `LaTeX` — MathJax wrapper component
-- **services/api.ts** — Centralized API client (~548 lines). All backend calls go through a `request<T>()` helper with automatic JSON serialization. Chat history and app settings stored in localStorage via dedicated helper functions.
+- **services/api.ts** — Centralized API client (~630 lines). All backend calls go through a `request<T>()` helper with automatic JSON serialization. Includes functions for chat sessions, settings, and visual preference helpers (localStorage for color scheme and font size only).
 - **types.ts** — Shared TypeScript interfaces (`ArxivPaper`, `SavedPaper`, `ChatSession`, `Tag`, `Worldline`, etc.). Note: `authors` and `categories` are JSON strings in `SavedPaper` (parsed in routes). Defines `ARXIV_CATEGORY_GROUPS` constant with 14 groups and 140+ subcategories.
 - **colorSchemes.ts** — 8 theme definitions (default-dark, solarized-dark/light, nord-dark/light, dracula-dark/light, one-dark-pro) applied via CSS custom properties.
 
 ### Server (`server/src/`)
 
-- **index.ts** — Express entry point. CORS enabled, JSON body parser (10MB limit). Mounts 7 route modules under `/api`. Serves static client build from `client/dist/` in production with SPA fallback. Initializes database and PDF storage on startup.
+- **index.ts** — Express entry point. CORS enabled, JSON body parser (10MB limit). Mounts 8 route modules under `/api`. Serves static client build from `client/dist/` in production with SPA fallback. Initializes database and PDF storage on startup.
 - **routes/** — RESTful route handlers:
   - `arxiv.ts` — Search, categories, latest/recent papers, single paper fetch, PDF proxy (avoids CORS)
   - `papers.ts` — Full CRUD for saved papers + bulk operations (download-pdfs, delete-pdfs, delete, status, add-tag, remove-tag) + sub-routes for comments and tags
@@ -81,17 +83,18 @@ paperpile-navigate/
   - `authors.ts` — Favorite authors + batch-fetches recent publications (concurrency limit: 3)
   - `export.ts` — BibTeX and Paperpile JSON generation. Citation key format: `{LastName}{Year}{ArxivId}`. Embeds tags as keywords and comments as notes.
   - `worldlines.ts` — Worldline CRUD, paper assignment with position ordering, TF-IDF similarity scoring, batch import from ArXiv
+  - `settings.ts` — Key-value settings CRUD (API key, similarity threshold, etc.)
 - **services/** — Business logic layer:
   - `database.ts` — SQLite with better-sqlite3. WAL mode, foreign keys enabled. 40+ query functions, all parameterized. Schema created/migrated in `initializeDatabase()`.
   - `arxiv.ts` — ArXiv REST API client (`http://export.arxiv.org/api/query`). XML parsing via xml2js. Functions for search, author search, single paper fetch, latest (RSS), and recent (HTML scraping).
-  - `chat.ts` — Anthropic API integration with PDF base64 encoding and ephemeral prompt caching (`cache_control: { type: 'ephemeral' }`).
+  - `chat.ts` — Anthropic API integration with PDF base64 encoding and ephemeral prompt caching (`cache_control: { type: 'ephemeral' }`). Note: the Anthropic SDK is NOT a direct dependency — the server calls the Anthropic REST API via fetch, forwarding the API key from client-side settings.
   - `pdf.ts` — PDF storage management under `server/data/pdfs/`. Download, store, delete, path resolution. ArXiv IDs escaped (`/` → `_`) for filenames.
   - `similarity.ts` — Custom TF-IDF cosine similarity implementation. Tokenize → remove stop words → compute TF-IDF → cosine similarity. Title weighted 2x.
   - `paperpile.ts` — BibTeX/Paperpile export formatting with author name parsing.
 
 ### Database Schema (`server/data/papers.db`)
 
-SQLite database created at runtime. 7 tables with cascade deletion:
+SQLite database created at runtime. 10 tables with cascade deletion:
 
 | Table | Key Columns | Constraints |
 |-------|-------------|-------------|
@@ -102,13 +105,18 @@ SQLite database created at runtime. 7 tables with cascade deletion:
 | `favorite_authors` | id, name, added_at | name UNIQUE |
 | `worldlines` | id, name, color, created_at | — |
 | `worldline_papers` | worldline_id, paper_id, position | Composite PK, both FK CASCADE |
+| `chat_sessions` | id, arxiv_id, paper_title, worldline_id, session_type, created_at, updated_at | session_type CHECK ('paper','worldline') |
+| `chat_messages` | id, session_id, role, content, token_usage, created_at | FK→chat_sessions CASCADE |
+| `settings` | key, value | key PRIMARY KEY (UNIQUE) |
 
-Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `paper_tags.tag_id`, `worldline_papers.worldline_id`, `worldline_papers.paper_id`.
+Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `paper_tags.tag_id`, `worldline_papers.worldline_id`, `worldline_papers.paper_id`, `chat_sessions.arxiv_id`, `chat_sessions.worldline_id`, `chat_sessions.session_type`.
 
 ### Storage Split
 
-- **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines
-- **Client-side (localStorage)**: Claude API key (`paperpile-navigate-settings`), theme preference, chat history (`paperpile-navigate-chat-history`), worldline chat history (`paperpile-navigate-worldline-chat-history`)
+**Important:** The project was originally client-side only, storing everything in localStorage. Most data has since been migrated server-side. Do not introduce new localStorage keys for persistent data — use the server-side settings or database instead.
+
+- **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines, chat sessions + messages, settings (Claude API key, similarity threshold)
+- **Client-side (localStorage)**: Only visual preferences that affect rendering before API loads — color scheme and card font size (`paperpile-navigate-visual-prefs`)
 
 ## Key Dependencies
 
