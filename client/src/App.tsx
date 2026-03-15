@@ -167,7 +167,7 @@ export default function App() {
       {!immersiveMode && <header className="app-header">
         <div className="header-left">
           <h1 className="app-title" onClick={() => { setSelectedPaper(null); setViewMode('browse'); }}>
-            Paperpile Navigate
+            Navigate
           </h1>
           {viewMode !== 'viewer' && (
             <nav className="nav-tabs">
