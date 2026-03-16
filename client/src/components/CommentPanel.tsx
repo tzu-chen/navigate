@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Comment } from '../types';
 import * as api from '../services/api';
+import Icon from './Icon';
 
 interface Props {
   paperId: number;
@@ -136,7 +137,7 @@ export default function CommentPanel({ paperId, comments, currentPage, onPageCha
                   </span>
                   <div className="comment-actions">
                     <button className="btn-icon" onClick={() => startEdit(comment)} title="Edit">
-                      &#9998;
+                      <Icon name="pencil" />
                     </button>
                     <button className="btn-icon btn-danger-icon" onClick={() => handleDelete(comment.id)} title="Delete">
                       &times;

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import Icon from './Icon';
 
 /**
  * arXiv announces new submissions at 20:00 ET (8 PM Eastern),
@@ -79,7 +80,7 @@ export default function ArxivRefreshTimer() {
 
   return (
     <div className="arxiv-refresh-timer" title="Time until next arXiv announcement (20:00 ET, Sun–Thu)">
-      <span className="arxiv-refresh-icon">&#8635;</span>
+      <span className="arxiv-refresh-icon"><Icon name="refresh" /></span>
       <span className="arxiv-refresh-label">arXiv</span>
       <span className="arxiv-refresh-countdown">{formatCountdown(secondsLeft)}</span>
     </div>

@@ -10,6 +10,7 @@ import WorldlineSidebarPanel from './WorldlineSidebarPanel';
 import WorldlineInfoPanel from './WorldlineInfoPanel';
 import BatchImportPanel from './BatchImportPanel';
 import LaTeX from './LaTeX';
+import Icon from './Icon';
 
 function isSavedPaper(paper: SavedPaper | ArxivPaper): paper is SavedPaper {
   return 'arxiv_id' in paper;
@@ -228,7 +229,7 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
           onClick={() => setSidebarVisible(v => !v)}
           title={sidebarVisible ? 'Hide panel' : 'Show panel'}
         >
-          {sidebarVisible ? '\u25B6' : '\u25C0'}
+          {sidebarVisible ? <Icon name="chevron-right" /> : <Icon name="chevron-left" />}
         </button>
 
         {sidebarVisible && <div className="viewer-sidebar-backdrop active" onClick={() => setSidebarVisible(false)} />}
