@@ -3,6 +3,8 @@ import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
+import Icon from './Icon';
+
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
   import.meta.url,
@@ -250,7 +252,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
               onClick={() => setOutlineOpen(o => !o)}
               title="Toggle outline"
             >
-              &#9776;
+              <Icon name="hamburger" />
             </button>
           )}
           <button
@@ -259,7 +261,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
             disabled={currentPage <= 1}
             title="Previous page"
           >
-            &#9664;
+            <Icon name="triangle-left" />
           </button>
           <span className="pdf-page-info">
             <input
@@ -278,7 +280,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
             disabled={currentPage >= numPages}
             title="Next page"
           >
-            &#9654;
+            <Icon name="triangle-right" />
           </button>
         </div>
 
@@ -298,7 +300,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
             onClick={togglePdfDarkTheme}
             title={pdfDarkTheme ? 'Switch to light mode' : 'Switch to dark mode'}
           >
-            {pdfDarkTheme ? '\u2600' : '\u263D'}
+            {pdfDarkTheme ? <Icon name="sun" /> : <Icon name="moon" />}
           </button>
           {onToggleImmersive && (
             <button
@@ -306,7 +308,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
               onClick={onToggleImmersive}
               title={immersiveMode ? 'Exit immersive mode (Esc)' : 'Immersive mode — hide all toolbars'}
             >
-              {immersiveMode ? '\u2716' : '\u2922'}
+              {immersiveMode ? <Icon name="close" /> : <Icon name="expand" />}
             </button>
           )}
           <a
@@ -344,7 +346,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
                 onClick={() => setOutlineOpen(false)}
                 title="Close outline"
               >
-                &#10005;
+                <Icon name="x-mark" />
               </button>
             </div>
             <div className="pdf-outline-list">

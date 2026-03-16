@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { SavedPaper, Worldline } from '../types';
 import * as api from '../services/api';
 import LaTeX from './LaTeX';
+import Icon from './Icon';
 
 interface Props {
   paper: SavedPaper;
@@ -107,7 +108,7 @@ export default function WorldlineSidebarPanel({ paper, onOpenPaper, showNotifica
             <span className="wl-sidebar-group-name">{wl.name}</span>
             <span className="wl-sidebar-group-count">{wl.papers.length}</span>
             <span className={`wl-collapse-chevron ${expandedWl.has(wl.id) ? 'open' : ''}`}>
-              {'\u25B6'}
+              <Icon name="chevron-right" />
             </span>
           </div>
           {expandedWl.has(wl.id) && (

@@ -10,6 +10,7 @@ import ChatHistory from './components/ChatHistory';
 import WorldlinePanel from './components/WorldlinePanel';
 import SettingsModal from './components/SettingsModal';
 import ArxivRefreshTimer from './components/ArxivRefreshTimer';
+import Icon from './components/Icon';
 
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('browse');
@@ -216,7 +217,7 @@ export default function App() {
             onClick={() => setSettingsOpen(true)}
             title="Settings"
           >
-            &#9881;
+            <Icon name="gear" />
           </button>
         </div>
       </header>}

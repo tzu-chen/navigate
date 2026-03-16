@@ -3,6 +3,7 @@ import Markdown from 'react-markdown';
 import { ChatSession, SavedPaper } from '../types';
 import * as api from '../services/api';
 import LaTeX from './LaTeX';
+import Icon from './Icon';
 
 interface Props {
   savedPapers: SavedPaper[];
@@ -128,7 +129,7 @@ export default function ChatHistory({ savedPapers, onOpenPaper, showNotification
                   >
                     <div className="chat-history-session-info">
                       <span className="chat-history-session-preview">
-                        {expandedId === session.id ? '▼' : '▶'} {firstUserMsg(session)}
+                        {expandedId === session.id ? <Icon name="chevron-down" /> : <Icon name="chevron-right" />} {firstUserMsg(session)}
                       </span>
                       <span className="chat-history-session-meta">
                         {new Date(session.updatedAt).toLocaleDateString()}{' '}

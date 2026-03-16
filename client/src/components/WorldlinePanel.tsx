@@ -4,6 +4,7 @@ import Markdown from 'react-markdown';
 import { SavedPaper, Worldline, ChatMessage, WorldlineChatSession } from '../types';
 import * as api from '../services/api';
 import LaTeX from './LaTeX';
+import Icon from './Icon';
 
 interface Props {
   papers: SavedPaper[];
@@ -815,7 +816,7 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
           onClick={() => setSidebarOpen(!sidebarOpen)}
           title={sidebarOpen ? 'Hide panel' : 'Show panel'}
         >
-          {sidebarOpen ? '\u25B6' : '\u25C0'}
+          {sidebarOpen ? <Icon name="chevron-right" /> : <Icon name="chevron-left" />}
         </button>
 
         {/* Sidebar */}
@@ -1115,7 +1116,7 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
                 className="wl-collapsible-header"
                 onClick={() => setAllPapersOpen(prev => !prev)}
               >
-                <span className={`wl-collapse-chevron ${allPapersOpen ? 'open' : ''}`}>{'\u25B6'}</span>
+                <span className={`wl-collapse-chevron ${allPapersOpen ? 'open' : ''}`}><Icon name="chevron-right" /></span>
                 All Papers ({papers.length})
               </h4>
               {allPapersOpen && (
