@@ -1,8 +1,11 @@
 import { Router, Request, Response } from 'express';
+import multer from 'multer';
+import crypto from 'crypto';
 import * as db from '../services/database';
-import { downloadAndStorePdf, deleteLocalPdf, resolveDbPdfPath } from '../services/pdf';
+import { downloadAndStorePdf, deleteLocalPdf, resolveDbPdfPath, storeUploadedPdf } from '../services/pdf';
 
 const router = Router();
+const upload = multer({ limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB
 
 function paramInt(val: string | string[]): number {
   return parseInt(String(val), 10);
@@ -66,6 +69,48 @@ router.post('/', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Save paper error:', error);
     res.status(500).json({ error: 'Failed to save paper' });
+  }
+});
+
+// POST /api/papers/upload - Upload a PDF as an external reference
+router.post('/upload', upload.single('pdf'), (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'PDF file is required' });
+    }
+
+    const { title, authors, summary, categories, doi, journal_ref } = req.body;
+    if (!title) {
+      return res.status(400).json({ error: 'Title is required' });
+    }
+
+    const arxivId = `upload-${crypto.randomUUID()}`;
+    const pdfPath = storeUploadedPdf(req.file.buffer);
+
+    const result = db.savePaper({
+      arxiv_id: arxivId,
+      title,
+      summary: summary || '',
+      authors: typeof authors === 'string' ? authors : JSON.stringify(authors || []),
+      published: new Date().toISOString(),
+      updated: new Date().toISOString(),
+      categories: typeof categories === 'string' ? categories : JSON.stringify(categories || []),
+      pdf_url: '',
+      abs_url: '',
+      doi: doi || undefined,
+      journal_ref: journal_ref || undefined,
+    });
+
+    const paper = db.getPaper(result.lastInsertRowid as number) as any;
+    if (paper) {
+      db.updatePaperPdfPath(paper.id, pdfPath);
+      paper.pdf_path = pdfPath;
+    }
+
+    res.status(201).json(paper);
+  } catch (error) {
+    console.error('Upload paper error:', error);
+    res.status(500).json({ error: 'Failed to upload paper' });
   }
 });
 
@@ -250,7 +295,10 @@ router.get('/:id/pdf', (req: Request, res: Response) => {
     }
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${paper.arxiv_id.replace('/', '_')}.pdf"`);
+    const filename = paper.arxiv_id.startsWith('upload-')
+      ? paper.title.replace(/[^a-zA-Z0-9\s-]/g, '').replace(/\s+/g, '_').slice(0, 80) + '.pdf'
+      : paper.arxiv_id.replace('/', '_') + '.pdf';
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
     res.sendFile(absPath);
   } catch (error) {
     console.error('Serve PDF error:', error);

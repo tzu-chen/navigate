@@ -10,12 +10,16 @@ export function generateBibtex(paper: SavedPaper, tags: Tag[], comments: Comment
   const year = new Date(paper.published).getFullYear();
 
   // Generate citation key: first author's last name + year
+  const isUpload = paper.arxiv_id.startsWith('upload-');
   const firstAuthorLastName = authors[0]
     ?.split(' ')
     .pop()
     ?.replace(/[^a-zA-Z]/g, '')
     ?.toLowerCase() || 'unknown';
-  const citeKey = `${firstAuthorLastName}${year}${paper.arxiv_id.replace(/[^a-zA-Z0-9]/g, '')}`;
+  const titleWord = paper.title.split(/\s+/)[0]?.replace(/[^a-zA-Z]/g, '').toLowerCase() || '';
+  const citeKey = isUpload
+    ? `${firstAuthorLastName}${year}${titleWord}`
+    : `${firstAuthorLastName}${year}${paper.arxiv_id.replace(/[^a-zA-Z0-9]/g, '')}`;
 
   const bibtexAuthors = authors.join(' and ');
 
@@ -31,12 +35,19 @@ export function generateBibtex(paper: SavedPaper, tags: Tag[], comments: Comment
     `  author = {${bibtexAuthors}}`,
     `  title = {${paper.title}}`,
     `  year = {${year}}`,
-    `  eprint = {${paper.arxiv_id}}`,
-    `  archiveprefix = {arXiv}`,
-    `  primaryclass = {${categories[0] || ''}}`,
-    `  abstract = {${paper.summary}}`,
-    `  url = {${paper.abs_url}}`,
   ];
+
+  if (!isUpload) {
+    fields.push(`  eprint = {${paper.arxiv_id}}`);
+    fields.push(`  archiveprefix = {arXiv}`);
+    fields.push(`  primaryclass = {${categories[0] || ''}}`);
+  }
+
+  fields.push(`  abstract = {${paper.summary}}`);
+
+  if (paper.abs_url) {
+    fields.push(`  url = {${paper.abs_url}}`);
+  }
 
   if (paper.doi) {
     fields.push(`  doi = {${paper.doi}}`);
@@ -85,14 +96,14 @@ export function generatePaperpileMetadata(
     }),
     year: new Date(paper.published).getFullYear(),
     abstract: paper.summary,
-    source: 'arXiv',
+    source: paper.arxiv_id.startsWith('upload-') ? 'upload' : 'arXiv',
     identifiers: {
-      arxiv: paper.arxiv_id,
+      arxiv: paper.arxiv_id.startsWith('upload-') ? undefined : paper.arxiv_id,
       doi: paper.doi || undefined,
     },
     urls: {
-      pdf: paper.pdf_url,
-      abstract: paper.abs_url,
+      pdf: paper.pdf_url || undefined,
+      abstract: paper.abs_url || undefined,
     },
     labels: tags.map(t => t.name),
     folders: categories,
@@ -101,7 +112,7 @@ export function generatePaperpileMetadata(
       page: c.page_number,
       created: c.created_at,
     })),
-    journal: paper.journal_ref || `arXiv:${paper.arxiv_id}`,
+    journal: paper.journal_ref || (paper.arxiv_id.startsWith('upload-') ? undefined : `arXiv:${paper.arxiv_id}`),
   };
 }
 
