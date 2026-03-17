@@ -1,8 +1,11 @@
 import { Router, Request, Response } from 'express';
-import multer from 'multer';
 import crypto from 'crypto';
 import * as db from '../services/database';
 import { downloadAndStorePdf, deleteLocalPdf, resolveDbPdfPath, storeUploadedPdf } from '../services/pdf';
+
+// Use require to avoid issues with multer type declarations
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const multer = require('multer');
 
 const router = Router();
 const upload = multer({ limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB
@@ -75,7 +78,8 @@ router.post('/', (req: Request, res: Response) => {
 // POST /api/papers/upload - Upload a PDF as an external reference
 router.post('/upload', upload.single('pdf'), (req: Request, res: Response) => {
   try {
-    if (!req.file) {
+    const file = (req as any).file as { buffer: Buffer; originalname: string } | undefined;
+    if (!file) {
       return res.status(400).json({ error: 'PDF file is required' });
     }
 
@@ -85,7 +89,7 @@ router.post('/upload', upload.single('pdf'), (req: Request, res: Response) => {
     }
 
     const arxivId = `upload-${crypto.randomUUID()}`;
-    const pdfPath = storeUploadedPdf(req.file.buffer);
+    const pdfPath = storeUploadedPdf(file.buffer);
 
     const result = db.savePaper({
       arxiv_id: arxivId,
