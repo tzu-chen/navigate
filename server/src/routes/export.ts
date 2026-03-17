@@ -24,7 +24,10 @@ router.get('/bibtex/:id', (req: Request, res: Response) => {
 
     if (req.query.download === 'true') {
       res.setHeader('Content-Type', 'application/x-bibtex');
-      res.setHeader('Content-Disposition', `attachment; filename="${paper.arxiv_id.replace('/', '_')}.bib"`);
+      const bibFilename = paper.arxiv_id.startsWith('upload-')
+        ? paper.title.replace(/[^a-zA-Z0-9\s-]/g, '').replace(/\s+/g, '_').slice(0, 80) + '.bib'
+        : paper.arxiv_id.replace('/', '_') + '.bib';
+      res.setHeader('Content-Disposition', `attachment; filename="${bibFilename}"`);
     } else {
       res.setHeader('Content-Type', 'text/plain');
     }

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const PDF_DIR = path.join(DATA_DIR, 'pdfs');
@@ -64,4 +65,13 @@ export function deleteLocalPdf(relativePath: string): boolean {
 export function getLocalPdfPathForArxivId(arxivId: string): string | null {
   const absPath = getAbsolutePdfPath(arxivId);
   return fs.existsSync(absPath) ? absPath : null;
+}
+
+export function storeUploadedPdf(buffer: Buffer): string {
+  initializePdfStorage();
+  const uuid = crypto.randomUUID();
+  const filename = `upload-${uuid}.pdf`;
+  const absPath = path.join(PDF_DIR, filename);
+  fs.writeFileSync(absPath, buffer);
+  return `pdfs/${filename}`;
 }

@@ -12,8 +12,9 @@ import {
   addChatMessage,
   getChatMessages,
   getSetting,
+  getPaperByArxivId,
 } from '../services/database';
-import { getLocalPdfPathForArxivId } from '../services/pdf';
+import { getLocalPdfPathForArxivId, resolveDbPdfPath } from '../services/pdf';
 
 const router = Router();
 
@@ -26,6 +27,21 @@ async function fetchPdfBase64(arxivId: string): Promise<string> {
   const cached = pdfCache.get(arxivId);
   if (cached && Date.now() - cached.fetchedAt < PDF_CACHE_TTL) {
     return cached.data;
+  }
+
+  // For uploaded papers, look up by arxiv_id to get the pdf_path
+  if (arxivId.startsWith('upload-')) {
+    const paper = getPaperByArxivId(arxivId) as any;
+    if (paper?.pdf_path) {
+      const absPath = resolveDbPdfPath(paper.pdf_path);
+      if (fs.existsSync(absPath)) {
+        const buffer = fs.readFileSync(absPath);
+        const base64 = buffer.toString('base64');
+        pdfCache.set(arxivId, { data: base64, fetchedAt: Date.now() });
+        return base64;
+      }
+    }
+    throw new Error('Uploaded PDF not found on disk');
   }
 
   // Check for local PDF first
@@ -112,8 +128,7 @@ router.post('/', async (req: Request, res: Response) => {
         text: `You are a research assistant helping analyze an academic paper.
 
 Title: ${paperContext.title}
-Authors: ${paperContext.authors.join(', ')}
-ArXiv ID: ${paperContext.arxivId}
+Authors: ${paperContext.authors.join(', ')}${paperContext.arxivId.startsWith('upload-') ? '' : `\nArXiv ID: ${paperContext.arxivId}`}
 Categories: ${paperContext.categories.join(', ')}
 
 ${pdfBase64 ? 'The full PDF of the paper is attached to the first message.' : `Abstract:\n${paperContext.summary}\n\n(The PDF could not be loaded. Answer based on the abstract above.)`}${relatedPapersSection}

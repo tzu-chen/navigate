@@ -49,6 +49,14 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
   const [bibtexText, setBibtexText] = useState('');
   const [bibtexImporting, setBibtexImporting] = useState(false);
 
+  // PDF upload state
+  const [showPdfUpload, setShowPdfUpload] = useState(false);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadTitle, setUploadTitle] = useState('');
+  const [uploadAuthors, setUploadAuthors] = useState('');
+  const [uploadSummary, setUploadSummary] = useState('');
+  const [uploading, setUploading] = useState(false);
+
   // Bulk selection state
   const [selectedPaperIds, setSelectedPaperIds] = useState<Set<number>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
@@ -308,6 +316,37 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
     e.target.value = '';
   }
 
+  async function handlePdfUpload() {
+    if (!uploadFile || !uploadTitle.trim()) {
+      showNotification('PDF file and title are required');
+      return;
+    }
+    const authors = uploadAuthors.split(',').map(a => a.trim()).filter(a => a.length > 0);
+    if (authors.length === 0) {
+      showNotification('At least one author is required');
+      return;
+    }
+    setUploading(true);
+    try {
+      await api.uploadPaper(uploadFile, {
+        title: uploadTitle.trim(),
+        authors,
+        summary: uploadSummary.trim() || undefined,
+      });
+      showNotification('Paper uploaded successfully');
+      setUploadFile(null);
+      setUploadTitle('');
+      setUploadAuthors('');
+      setUploadSummary('');
+      setShowPdfUpload(false);
+      await onRefresh();
+    } catch (err: any) {
+      showNotification(err.message || 'Failed to upload paper');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   const hasActiveFilters = filterStatus !== '' || filterTag !== null || filterWorldline !== null || searchTerm !== '';
 
 
@@ -361,6 +400,15 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
               onClick={() => setShowBibtexImport(!showBibtexImport)}
             >
               Import BibTeX
+            </button>
+          </div>
+
+          <div className="control-group">
+            <button
+              className={`btn btn-sm ${showPdfUpload ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setShowPdfUpload(!showPdfUpload)}
+            >
+              Upload PDF
             </button>
           </div>
 
@@ -503,6 +551,59 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
         </div>
       )}
 
+      {showPdfUpload && (
+        <div className="batch-import-section">
+          <h3>Upload PDF</h3>
+          <p className="batch-import-hint">
+            Upload a PDF file as an external reference. It will be added to your library and can be tagged, commented on, added to worldlines, and chatted about.
+          </p>
+          <div className="batch-import-body" style={{ flexDirection: 'column', gap: '0.5rem' }}>
+            <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer', display: 'inline-block', alignSelf: 'flex-start' }}>
+              {uploadFile ? uploadFile.name : 'Choose PDF File'}
+              <input
+                type="file"
+                accept=".pdf,application/pdf"
+                onChange={e => setUploadFile(e.target.files?.[0] || null)}
+                style={{ display: 'none' }}
+                disabled={uploading}
+              />
+            </label>
+            <input
+              type="text"
+              placeholder="Title (required)"
+              value={uploadTitle}
+              onChange={e => setUploadTitle(e.target.value)}
+              disabled={uploading}
+              style={{ width: '100%' }}
+            />
+            <input
+              type="text"
+              placeholder="Authors (comma-separated, required)"
+              value={uploadAuthors}
+              onChange={e => setUploadAuthors(e.target.value)}
+              disabled={uploading}
+              style={{ width: '100%' }}
+            />
+            <textarea
+              placeholder="Abstract / summary (optional)"
+              value={uploadSummary}
+              onChange={e => setUploadSummary(e.target.value)}
+              rows={3}
+              disabled={uploading}
+              style={{ width: '100%' }}
+            />
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={handlePdfUpload}
+              disabled={uploading || !uploadFile || !uploadTitle.trim() || !uploadAuthors.trim()}
+              style={{ alignSelf: 'flex-start' }}
+            >
+              {uploading ? 'Uploading...' : 'Upload'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Bulk operations toolbar */}
       {selectedPaperIds.size > 0 && (
         <div className="bulk-toolbar">
@@ -560,7 +661,7 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
       {filteredPapers.length === 0 ? (
         <div className="empty-state">
           {papers.length === 0
-            ? 'Your library is empty. Browse ArXiv to add papers.'
+            ? 'Your library is empty. Browse ArXiv or upload a PDF to add papers.'
             : 'No papers match your filters.'}
         </div>
       ) : (
@@ -630,7 +731,9 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
                     Added {new Date(paper.added_at).toLocaleDateString()}
                   </span>
                   <span className="paper-categories">
-                    {categories.slice(0, 3).map(c => (
+                    {paper.arxiv_id.startsWith('upload-') ? (
+                      <span className="category-badge" style={{ backgroundColor: '#8b5cf6' }}>Uploaded</span>
+                    ) : categories.slice(0, 3).map(c => (
                       <span key={c} className="category-badge">{c}</span>
                     ))}
                   </span>

@@ -78,6 +78,30 @@ export async function savePaper(paper: ArxivPaper): Promise<SavedPaper> {
   });
 }
 
+export async function uploadPaper(
+  file: File,
+  metadata: { title: string; authors: string[]; summary?: string; categories?: string[]; doi?: string; journalRef?: string }
+): Promise<SavedPaper> {
+  const formData = new FormData();
+  formData.append('pdf', file);
+  formData.append('title', metadata.title);
+  formData.append('authors', JSON.stringify(metadata.authors));
+  if (metadata.summary) formData.append('summary', metadata.summary);
+  if (metadata.categories?.length) formData.append('categories', JSON.stringify(metadata.categories));
+  if (metadata.doi) formData.append('doi', metadata.doi);
+  if (metadata.journalRef) formData.append('journal_ref', metadata.journalRef);
+
+  const res = await fetch(`${BASE}/papers/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || 'Upload failed');
+  }
+  return res.json();
+}
+
 export async function updatePaperStatus(id: number, status: string): Promise<void> {
   await request(`/papers/${id}/status`, {
     method: 'PATCH',

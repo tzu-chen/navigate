@@ -141,14 +141,16 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
                 </button>
               </div>
             )}
-            <a
-              href={absUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn btn-secondary btn-sm"
-            >
-              ArXiv Page
-            </a>
+            {absUrl && !arxivId.startsWith('upload-') && (
+              <a
+                href={absUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-secondary btn-sm"
+              >
+                ArXiv Page
+              </a>
+            )}
             {isInLibrary ? (
               <>
                 <button className="btn btn-success btn-sm" disabled>
@@ -217,7 +219,7 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
       <div className="viewer-body">
         <div className="viewer-pdf">
           <PDFViewer
-            pdfUrl={saved?.pdf_path ? api.getLocalPdfUrl(saved.id) : api.getPdfProxyUrl(arxivId)}
+            pdfUrl={saved?.pdf_path ? api.getLocalPdfUrl(saved.id) : (arxivId.startsWith('upload-') ? '' : api.getPdfProxyUrl(arxivId))}
             onPageChange={setCurrentPage}
             immersiveMode={immersiveMode}
             onToggleImmersive={() => setImmersiveMode(m => !m)}
