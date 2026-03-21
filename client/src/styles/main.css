@@ -296,6 +296,16 @@ input[type="color"] {
   border-bottom: 1px solid var(--border-color);
 }
 
+/* Browse search toggle - hidden on desktop */
+.mobile-search-toggle {
+  display: none;
+}
+
+/* Browse control row wrapper - transparent on desktop */
+.browser-control-row-wrap {
+  display: contents;
+}
+
 .control-row {
   display: flex;
   align-items: flex-end;
@@ -3630,6 +3640,29 @@ input[type="color"] {
     min-width: 0;
     width: 100%;
     flex-basis: 100%;
+  }
+
+  /* Show browse search toggle on mobile */
+  .mobile-search-toggle {
+    display: block;
+    margin-bottom: 8px;
+  }
+
+  .mobile-search-toggle-btn {
+    width: 100%;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Collapse browse control row on mobile */
+  .browser-control-row-wrap {
+    display: none;
+  }
+
+  .browser-control-row-wrap.expanded {
+    display: block;
   }
 
   /* Show mobile actions toggle */
