@@ -62,6 +62,9 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bulkAction, setBulkAction] = useState<string | null>(null);
 
+  // Mobile actions toggle
+  const [showMobileActions, setShowMobileActions] = useState(false);
+
   useEffect(() => {
     if (filterTag === null) {
       setTaggedPaperIds(null);
@@ -376,46 +379,57 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
             </select>
           </div>
 
-          <div className="control-group">
+          <div className="control-group mobile-actions-toggle">
             <button
               className="btn btn-secondary btn-sm"
-              onClick={() => setShowTagManager(!showTagManager)}
+              onClick={() => setShowMobileActions(!showMobileActions)}
             >
-              Manage Tags
+              {showMobileActions ? 'Hide Actions' : 'Actions\u2026'}
             </button>
           </div>
 
-          <div className="control-group">
-            <button
-              className={`btn btn-sm ${showBatchImport ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => setShowBatchImport(!showBatchImport)}
-            >
-              Batch Import
-            </button>
-          </div>
+          <div className={`library-action-buttons ${showMobileActions ? 'expanded' : ''}`}>
+            <div className="control-group">
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => setShowTagManager(!showTagManager)}
+              >
+                Manage Tags
+              </button>
+            </div>
 
-          <div className="control-group">
-            <button
-              className={`btn btn-sm ${showBibtexImport ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => setShowBibtexImport(!showBibtexImport)}
-            >
-              Import BibTeX
-            </button>
-          </div>
+            <div className="control-group">
+              <button
+                className={`btn btn-sm ${showBatchImport ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setShowBatchImport(!showBatchImport)}
+              >
+                Batch Import
+              </button>
+            </div>
 
-          <div className="control-group">
-            <button
-              className={`btn btn-sm ${showPdfUpload ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => setShowPdfUpload(!showPdfUpload)}
-            >
-              Upload PDF
-            </button>
-          </div>
+            <div className="control-group">
+              <button
+                className={`btn btn-sm ${showBibtexImport ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setShowBibtexImport(!showBibtexImport)}
+              >
+                Import BibTeX
+              </button>
+            </div>
 
-          <div className="control-group">
-            <button className="btn btn-primary btn-sm" onClick={handleExportAll}>
-              {hasActiveFilters ? `Export ${filteredPapers.length} (BibTeX)` : 'Export All (BibTeX)'}
-            </button>
+            <div className="control-group">
+              <button
+                className={`btn btn-sm ${showPdfUpload ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setShowPdfUpload(!showPdfUpload)}
+              >
+                Upload PDF
+              </button>
+            </div>
+
+            <div className="control-group">
+              <button className="btn btn-primary btn-sm" onClick={handleExportAll}>
+                {hasActiveFilters ? `Export ${filteredPapers.length} (BibTeX)` : 'Export All (BibTeX)'}
+              </button>
+            </div>
           </div>
         </div>
 
