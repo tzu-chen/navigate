@@ -321,6 +321,16 @@ input[type="color"] {
   min-width: 180px;
 }
 
+/* Library action buttons wrapper - transparent on desktop */
+.library-action-buttons {
+  display: contents;
+}
+
+/* Mobile actions toggle - hidden on desktop */
+.mobile-actions-toggle {
+  display: none !important;
+}
+
 .search-group {
   flex: 1;
   min-width: 200px;
@@ -3622,21 +3632,81 @@ input[type="color"] {
     flex-basis: 100%;
   }
 
+  /* Show mobile actions toggle */
+  .mobile-actions-toggle {
+    display: flex !important;
+  }
+
+  /* Collapse action buttons on mobile */
+  .library-action-buttons {
+    display: none;
+    flex-basis: 100%;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .library-action-buttons.expanded {
+    display: flex;
+  }
+
+  .library-action-buttons .control-group {
+    flex: 0 0 auto;
+  }
+
+  .library-action-buttons .control-group .btn {
+    width: 100%;
+  }
+
+  /* Tag and worldline filters: horizontal scroll, no wrap */
+  .tag-filter-row {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 4px;
+  }
+
+  .tag-filter-row::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tag-filter-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .filter-row-label {
+    flex-shrink: 0;
+  }
+
   /* --- Paper Cards --- */
   .paper-card {
-    padding: 12px;
+    padding: 10px 12px;
   }
 
   .paper-card-header {
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 8px;
   }
 
   .paper-actions {
-    flex-wrap: wrap;
+    width: 100%;
+    display: flex;
+    gap: 6px;
+  }
+
+  .paper-actions .status-select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .paper-actions .btn {
+    flex: 0 0 auto;
   }
 
   .paper-meta {
-    gap: 8px;
+    gap: 6px;
+    font-size: 11px;
   }
 
   .paper-categories {
@@ -3647,10 +3717,27 @@ input[type="color"] {
   .bulk-toolbar {
     padding: 8px 10px;
     gap: 6px;
+    font-size: 12px;
   }
 
   .bulk-separator {
     display: none;
+  }
+
+  .bulk-toolbar .btn,
+  .bulk-toolbar select {
+    flex: 1 1 calc(50% - 3px);
+    min-width: 0;
+    font-size: 11px;
+  }
+
+  .bulk-count {
+    flex: 1 1 100%;
+    font-size: 12px;
+  }
+
+  .bulk-status {
+    flex: 1 1 100%;
   }
 
   /* --- Paper Viewer --- */
