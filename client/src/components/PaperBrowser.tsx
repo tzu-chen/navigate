@@ -37,6 +37,7 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
   const [scanningWorldlines, setScanningWorldlines] = useState(false);
   const similarityAbortRef = useRef<AbortController | null>(null);
   const [activeTab, setActiveTab] = useState<'new' | 'cross' | 'replace'>('new');
+  const [showMobileSearch, setShowMobileSearch] = useState(false);
 
   const PAGE_SIZE = 20;
 
@@ -209,64 +210,74 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
   return (
     <div className="paper-browser">
       <div className="browser-controls">
-        <div className="control-row">
-          <div className="control-group">
-            <label>Category</label>
-            <select
-              value={selectedCategory}
-              onChange={e => {
-                const val = e.target.value;
-                setSelectedCategory(val);
-                localStorage.setItem('navigate-category', val);
-              }}
-            >
-              {categoryGroups.map(group => (
-                <optgroup key={group.label} label={group.label}>
-                  {Object.entries(group.categories).map(([key, name]) => (
-                    <option key={key} value={key}>
-                      {key} - {name}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          </div>
-
-          <div className="control-group search-group">
-            <label>Search</label>
-            <div className="search-input-wrap">
-              <input
-                type="text"
-                placeholder="Search within category..."
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    if (!searchQuery && sortBy === 'submittedDate') fetchLatest();
-                    else if (!searchQuery && sortBy === 'lastUpdatedDate') fetchRecent();
-                    else performSearch(0);
-                  }
+        <div className="mobile-search-toggle">
+          <button
+            className="btn btn-secondary btn-sm mobile-search-toggle-btn"
+            onClick={() => setShowMobileSearch(!showMobileSearch)}
+          >
+            {selectedCategory}{searchQuery ? ` \u00b7 "${searchQuery}"` : ''} {showMobileSearch ? '\u25B2' : '\u25BC'}
+          </button>
+        </div>
+        <div className={`browser-control-row-wrap ${showMobileSearch ? 'expanded' : ''}`}>
+          <div className="control-row">
+            <div className="control-group">
+              <label>Category</label>
+              <select
+                value={selectedCategory}
+                onChange={e => {
+                  const val = e.target.value;
+                  setSelectedCategory(val);
+                  localStorage.setItem('navigate-category', val);
                 }}
-              />
-              <button onClick={() => {
-                if (!searchQuery && sortBy === 'submittedDate') fetchLatest();
-                else if (!searchQuery && sortBy === 'lastUpdatedDate') fetchRecent();
-                else performSearch(0);
-              }} className="btn btn-primary">
-                Search
-              </button>
+              >
+                {categoryGroups.map(group => (
+                  <optgroup key={group.label} label={group.label}>
+                    {Object.entries(group.categories).map(([key, name]) => (
+                      <option key={key} value={key}>
+                        {key} - {name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
             </div>
-          </div>
 
-          <div className="control-group">
-            <label>Sort By</label>
-            <select value={sortBy} onChange={e => setSortBy(e.target.value)}>
-              {SORT_OPTIONS.map(opt => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+            <div className="control-group search-group">
+              <label>Search</label>
+              <div className="search-input-wrap">
+                <input
+                  type="text"
+                  placeholder="Search within category..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      if (!searchQuery && sortBy === 'submittedDate') fetchLatest();
+                      else if (!searchQuery && sortBy === 'lastUpdatedDate') fetchRecent();
+                      else performSearch(0);
+                    }
+                  }}
+                />
+                <button onClick={() => {
+                  if (!searchQuery && sortBy === 'submittedDate') fetchLatest();
+                  else if (!searchQuery && sortBy === 'lastUpdatedDate') fetchRecent();
+                  else performSearch(0);
+                }} className="btn btn-primary">
+                  Search
+                </button>
+              </div>
+            </div>
+
+            <div className="control-group">
+              <label>Sort By</label>
+              <select value={sortBy} onChange={e => setSortBy(e.target.value)}>
+                {SORT_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
       </div>
