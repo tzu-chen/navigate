@@ -171,38 +171,51 @@ export default function App() {
             Navigate
           </h1>
           {viewMode !== 'viewer' && (
-            <nav className="nav-tabs">
-              <button
-                className={`nav-tab ${viewMode === 'browse' ? 'active' : ''}`}
-                onClick={() => setViewMode('browse')}
+            <>
+              <nav className="nav-tabs">
+                <button
+                  className={`nav-tab ${viewMode === 'browse' ? 'active' : ''}`}
+                  onClick={() => setViewMode('browse')}
+                >
+                  Browse ArXiv
+                </button>
+                <button
+                  className={`nav-tab ${viewMode === 'library' ? 'active' : ''}`}
+                  onClick={() => setViewMode('library')}
+                >
+                  My Library ({savedPapers.length})
+                </button>
+                <button
+                  className={`nav-tab ${viewMode === 'authors' ? 'active' : ''}`}
+                  onClick={() => setViewMode('authors')}
+                >
+                  Favorite Authors ({favoriteAuthors.length})
+                </button>
+                <button
+                  className={`nav-tab ${viewMode === 'worldline' ? 'active' : ''}`}
+                  onClick={() => setViewMode('worldline')}
+                >
+                  Worldlines
+                </button>
+                <button
+                  className={`nav-tab ${viewMode === 'chatHistory' ? 'active' : ''}`}
+                  onClick={() => setViewMode('chatHistory')}
+                >
+                  Chat History
+                </button>
+              </nav>
+              <select
+                className="nav-dropdown"
+                value={viewMode}
+                onChange={e => setViewMode(e.target.value as ViewMode)}
               >
-                Browse ArXiv
-              </button>
-              <button
-                className={`nav-tab ${viewMode === 'library' ? 'active' : ''}`}
-                onClick={() => setViewMode('library')}
-              >
-                My Library ({savedPapers.length})
-              </button>
-              <button
-                className={`nav-tab ${viewMode === 'authors' ? 'active' : ''}`}
-                onClick={() => setViewMode('authors')}
-              >
-                Favorite Authors ({favoriteAuthors.length})
-              </button>
-              <button
-                className={`nav-tab ${viewMode === 'worldline' ? 'active' : ''}`}
-                onClick={() => setViewMode('worldline')}
-              >
-                Worldlines
-              </button>
-              <button
-                className={`nav-tab ${viewMode === 'chatHistory' ? 'active' : ''}`}
-                onClick={() => setViewMode('chatHistory')}
-              >
-                Chat History
-              </button>
-            </nav>
+                <option value="browse">Browse ArXiv</option>
+                <option value="library">My Library ({savedPapers.length})</option>
+                <option value="authors">Favorite Authors ({favoriteAuthors.length})</option>
+                <option value="worldline">Worldlines</option>
+                <option value="chatHistory">Chat History</option>
+              </select>
+            </>
           )}
           {viewMode === 'viewer' && (
             <button className="back-btn" onClick={handleBackFromViewer}>

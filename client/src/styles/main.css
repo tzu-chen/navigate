@@ -96,6 +96,11 @@ html, body {
   transition: all var(--transition);
 }
 
+/* Nav dropdown - hidden on desktop, shown on mobile */
+.nav-dropdown {
+  display: none;
+}
+
 .nav-tab:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
@@ -3569,41 +3574,38 @@ input[type="color"] {
   /* --- Header & Navigation --- */
   .app-header {
     padding: 0 10px;
-    height: auto;
-    min-height: 44px;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding-top: 6px;
-    padding-bottom: 6px;
+    height: 44px;
+    flex-wrap: nowrap;
+    gap: 0;
   }
 
   .header-left {
     gap: 8px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     width: 100%;
+    min-width: 0;
   }
 
   .app-title {
     font-size: 15px;
+    flex-shrink: 0;
   }
 
+  /* Hide tab buttons on mobile, show dropdown */
   .nav-tabs {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    flex-shrink: 1;
-    min-width: 0;
-  }
-
-  .nav-tabs::-webkit-scrollbar {
     display: none;
   }
 
-  .nav-tab {
-    padding: 6px 10px;
-    font-size: 12px;
-    white-space: nowrap;
-    flex-shrink: 0;
+  .nav-dropdown {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    padding: 4px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
   }
 
   .arxiv-refresh-timer {
@@ -3616,6 +3618,7 @@ input[type="color"] {
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
   }
 
   /* --- Browser & Library Controls --- */
