@@ -38,6 +38,9 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
   const similarityAbortRef = useRef<AbortController | null>(null);
   const [activeTab, setActiveTab] = useState<'new' | 'cross' | 'replace'>('new');
   const [showMobileSearch, setShowMobileSearch] = useState(false);
+  const [arxivIdInput, setArxivIdInput] = useState('');
+  const [arxivIdError, setArxivIdError] = useState('');
+  const [arxivIdLoading, setArxivIdLoading] = useState(false);
 
   const PAGE_SIZE = 20;
 
@@ -193,6 +196,26 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
     });
   }
 
+  async function handleArxivIdSubmit() {
+    const raw = arxivIdInput.trim();
+    if (!raw) return;
+    // Strip common URL prefixes
+    let id = raw
+      .replace(/^https?:\/\/(www\.)?arxiv\.org\/(abs|pdf|html)\//i, '')
+      .replace(/\.pdf$/i, '');
+    setArxivIdError('');
+    setArxivIdLoading(true);
+    try {
+      const paper = await api.getArxivPaper(id);
+      setArxivIdInput('');
+      onOpenPaper(paper);
+    } catch {
+      setArxivIdError('Paper not found');
+    } finally {
+      setArxivIdLoading(false);
+    }
+  }
+
   const totalPages = Math.ceil(totalResults / PAGE_SIZE);
 
   // Filter papers by announcement type tab when in latest mode
@@ -210,6 +233,23 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
 
   return (
     <div className="paper-browser">
+      <div className="arxiv-id-bar">
+        <label>ArXiv ID</label>
+        <div className="search-input-wrap">
+          <input
+            type="text"
+            placeholder="e.g. 2401.12345"
+            value={arxivIdInput}
+            onChange={e => { setArxivIdInput(e.target.value); setArxivIdError(''); }}
+            onKeyDown={e => { if (e.key === 'Enter') handleArxivIdSubmit(); }}
+            disabled={arxivIdLoading}
+          />
+          <button onClick={handleArxivIdSubmit} className="btn btn-primary" disabled={arxivIdLoading}>
+            {arxivIdLoading ? 'Loading...' : 'Go'}
+          </button>
+        </div>
+        {arxivIdError && <span className="arxiv-id-error">{arxivIdError}</span>}
+      </div>
       <div className="browser-controls">
         <div className="mobile-search-toggle">
           <button

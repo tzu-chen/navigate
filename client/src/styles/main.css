@@ -293,6 +293,36 @@ input[type="color"] {
 }
 
 /* ========================
+   ArXiv ID Bar
+   ======================== */
+.arxiv-id-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.arxiv-id-bar label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.arxiv-id-bar .search-input-wrap {
+  flex: 1;
+  max-width: 400px;
+}
+
+.arxiv-id-error {
+  font-size: 12px;
+  color: var(--danger-color, #ef4444);
+}
+
+/* ========================
    Browser Controls
    ======================== */
 .browser-controls, .library-controls {
