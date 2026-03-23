@@ -234,6 +234,14 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
   return (
     <div className="paper-browser">
       <div className="arxiv-id-bar">
+        <div className="mobile-search-toggle">
+          <button
+            className="btn btn-secondary btn-sm mobile-search-toggle-btn"
+            onClick={() => setShowMobileSearch(!showMobileSearch)}
+          >
+            {selectedCategory}{searchQuery ? ` \u00b7 "${searchQuery}"` : ''} {showMobileSearch ? '\u25B2' : '\u25BC'}
+          </button>
+        </div>
         <label>ArXiv ID</label>
         <div className="search-input-wrap">
           <input
@@ -251,14 +259,6 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
         {arxivIdError && <span className="arxiv-id-error">{arxivIdError}</span>}
       </div>
       <div className="browser-controls">
-        <div className="mobile-search-toggle">
-          <button
-            className="btn btn-secondary btn-sm mobile-search-toggle-btn"
-            onClick={() => setShowMobileSearch(!showMobileSearch)}
-          >
-            {selectedCategory}{searchQuery ? ` \u00b7 "${searchQuery}"` : ''} {showMobileSearch ? '\u25B2' : '\u25BC'}
-          </button>
-        </div>
         <div className={`browser-control-row-wrap ${showMobileSearch ? 'expanded' : ''}`}>
           <div className="control-row">
             <div className="control-group">
