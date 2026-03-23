@@ -14,6 +14,7 @@ import Icon from './components/Icon';
 
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('browse');
+  const [previousViewMode, setPreviousViewMode] = useState<ViewMode>('library');
   const [savedPapers, setSavedPapers] = useState<SavedPaper[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [favoriteAuthors, setFavoriteAuthors] = useState<FavoriteAuthor[]>([]);
@@ -99,12 +100,14 @@ export default function App() {
   };
 
   const handleOpenPaper = (paper: SavedPaper) => {
+    setPreviousViewMode(viewMode);
     setSelectedPaper(paper);
     setBrowsePapers([]);
     setViewMode('viewer');
   };
 
   const handleOpenArxivPaper = (paper: ArxivPaper) => {
+    setPreviousViewMode(viewMode);
     // Only keep browse papers context when opening from Browse view
     if (viewMode !== 'browse') {
       setBrowsePapers([]);
@@ -156,11 +159,22 @@ export default function App() {
     }
   };
 
+  const viewModeLabels: Record<ViewMode, string> = {
+    browse: 'Browse',
+    library: 'Library',
+    authors: 'Authors',
+    worldline: 'Worldlines',
+    chatHistory: 'Chat History',
+    viewer: 'Library',
+  };
+
   const handleBackFromViewer = () => {
     setSelectedPaper(null);
     setPreviewPaper(null);
-    setViewMode('library');
-    loadLibrary();
+    setViewMode(previousViewMode);
+    if (previousViewMode === 'library') {
+      loadLibrary();
+    }
   };
 
   return (
@@ -219,7 +233,7 @@ export default function App() {
           )}
           {viewMode === 'viewer' && (
             <button className="back-btn" onClick={handleBackFromViewer}>
-              &larr; Back to Library
+              &larr; Back to {viewModeLabels[previousViewMode]}
             </button>
           )}
         </div>
