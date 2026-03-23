@@ -469,7 +469,7 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
                 </span>
                 <span className="paper-categories">
                   {paper.categories.slice(0, 3).map(c => (
-                    <span key={c} className="category-badge">{c}</span>
+                    <span key={c} className={`category-badge cat-${c.includes('.') ? c.split('.')[0] : c}`}>{c}</span>
                   ))}
                 </span>
               </div>

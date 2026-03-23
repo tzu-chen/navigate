@@ -748,7 +748,7 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
                     {paper.arxiv_id.startsWith('upload-') ? (
                       <span className="category-badge" style={{ backgroundColor: '#8b5cf6' }}>Uploaded</span>
                     ) : categories.slice(0, 3).map(c => (
-                      <span key={c} className="category-badge">{c}</span>
+                      <span key={c} className={`category-badge cat-${c.includes('.') ? c.split('.')[0] : c}`}>{c}</span>
                     ))}
                   </span>
                   <span

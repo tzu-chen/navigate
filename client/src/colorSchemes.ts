@@ -241,4 +241,5 @@ export function applyColorScheme(scheme: ColorScheme): void {
   root.style.setProperty('--warning', scheme.colors.warning);
   root.style.setProperty('--shadow', scheme.colors.shadow);
   root.style.setProperty('--shadow-lg', scheme.colors.shadowLg);
+  root.setAttribute('data-theme-type', scheme.type);
 }

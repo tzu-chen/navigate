@@ -488,17 +488,109 @@ input[type="color"] {
 
 .paper-categories {
   display: flex;
-  gap: 4px;
+  gap: 12px;
 }
 
 .category-badge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
   background: var(--bg-tertiary);
   color: var(--text-secondary);
-  padding: 1px 6px;
-  border-radius: 3px;
+  padding: 2px 14px 2px 8px;
+  border-radius: 2px 0 0 2px;
   font-size: 11px;
   font-family: 'SF Mono', 'Fira Code', monospace;
+  border-left: 2.5px solid var(--text-muted);
+  line-height: 1.4;
 }
+
+.category-badge::after {
+  content: '';
+  position: absolute;
+  right: -8px;
+  top: 0;
+  width: 0;
+  height: 0;
+  border-top: 10px solid transparent;
+  border-bottom: 10px solid transparent;
+  border-left: 8px solid var(--bg-tertiary);
+}
+
+/* Category group colors */
+.category-badge.cat-cs { border-left-color: #818cf8; background: rgba(99, 102, 241, 0.15); color: #a5b4fc; }
+.category-badge.cat-cs::after { border-left-color: rgba(99, 102, 241, 0.15); }
+
+.category-badge.cat-math { border-left-color: #fbbf24; background: rgba(245, 158, 11, 0.15); color: #fcd34d; }
+.category-badge.cat-math::after { border-left-color: rgba(245, 158, 11, 0.15); }
+
+.category-badge.cat-astro-ph { border-left-color: #c084fc; background: rgba(168, 85, 247, 0.15); color: #d8b4fe; }
+.category-badge.cat-astro-ph::after { border-left-color: rgba(168, 85, 247, 0.15); }
+
+.category-badge.cat-physics { border-left-color: #2dd4bf; background: rgba(20, 184, 166, 0.15); color: #5eead4; }
+.category-badge.cat-physics::after { border-left-color: rgba(20, 184, 166, 0.15); }
+
+.category-badge.cat-cond-mat { border-left-color: #fb923c; background: rgba(249, 115, 22, 0.15); color: #fdba74; }
+.category-badge.cat-cond-mat::after { border-left-color: rgba(249, 115, 22, 0.15); }
+
+.category-badge.cat-hep-th, .category-badge.cat-hep-ph, .category-badge.cat-hep-ex, .category-badge.cat-hep-lat {
+  border-left-color: #fb7185; background: rgba(244, 63, 94, 0.15); color: #fda4af;
+}
+.category-badge.cat-hep-th::after, .category-badge.cat-hep-ph::after, .category-badge.cat-hep-ex::after, .category-badge.cat-hep-lat::after {
+  border-left-color: rgba(244, 63, 94, 0.15);
+}
+
+.category-badge.cat-stat { border-left-color: #4ade80; background: rgba(34, 197, 94, 0.15); color: #86efac; }
+.category-badge.cat-stat::after { border-left-color: rgba(34, 197, 94, 0.15); }
+
+.category-badge.cat-q-bio { border-left-color: #34d399; background: rgba(16, 185, 129, 0.15); color: #6ee7b7; }
+.category-badge.cat-q-bio::after { border-left-color: rgba(16, 185, 129, 0.15); }
+
+.category-badge.cat-q-fin { border-left-color: #22d3ee; background: rgba(6, 182, 212, 0.15); color: #67e8f9; }
+.category-badge.cat-q-fin::after { border-left-color: rgba(6, 182, 212, 0.15); }
+
+.category-badge.cat-eess { border-left-color: #94a3b8; background: rgba(100, 116, 139, 0.15); color: #cbd5e1; }
+.category-badge.cat-eess::after { border-left-color: rgba(100, 116, 139, 0.15); }
+
+.category-badge.cat-econ { border-left-color: #facc15; background: rgba(234, 179, 8, 0.15); color: #fde047; }
+.category-badge.cat-econ::after { border-left-color: rgba(234, 179, 8, 0.15); }
+
+.category-badge.cat-quant-ph { border-left-color: #a78bfa; background: rgba(139, 92, 246, 0.15); color: #c4b5fd; }
+.category-badge.cat-quant-ph::after { border-left-color: rgba(139, 92, 246, 0.15); }
+
+.category-badge.cat-gr-qc { border-left-color: #f87171; background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+.category-badge.cat-gr-qc::after { border-left-color: rgba(239, 68, 68, 0.15); }
+
+.category-badge.cat-nucl-th, .category-badge.cat-nucl-ex {
+  border-left-color: #d97706; background: rgba(180, 83, 9, 0.15); color: #fbbf24;
+}
+.category-badge.cat-nucl-th::after, .category-badge.cat-nucl-ex::after {
+  border-left-color: rgba(180, 83, 9, 0.15);
+}
+
+.category-badge.cat-nlin { border-left-color: #e879f9; background: rgba(217, 70, 239, 0.15); color: #f0abfc; }
+.category-badge.cat-nlin::after { border-left-color: rgba(217, 70, 239, 0.15); }
+
+/* Light theme adjustments for category ribbons */
+:root[data-theme-type="light"] .category-badge.cat-cs { color: #4338ca; }
+:root[data-theme-type="light"] .category-badge.cat-math { color: #b45309; }
+:root[data-theme-type="light"] .category-badge.cat-astro-ph { color: #7e22ce; }
+:root[data-theme-type="light"] .category-badge.cat-physics { color: #0f766e; }
+:root[data-theme-type="light"] .category-badge.cat-cond-mat { color: #c2410c; }
+:root[data-theme-type="light"] .category-badge.cat-hep-th,
+:root[data-theme-type="light"] .category-badge.cat-hep-ph,
+:root[data-theme-type="light"] .category-badge.cat-hep-ex,
+:root[data-theme-type="light"] .category-badge.cat-hep-lat { color: #be123c; }
+:root[data-theme-type="light"] .category-badge.cat-stat { color: #15803d; }
+:root[data-theme-type="light"] .category-badge.cat-q-bio { color: #047857; }
+:root[data-theme-type="light"] .category-badge.cat-q-fin { color: #0e7490; }
+:root[data-theme-type="light"] .category-badge.cat-eess { color: #475569; }
+:root[data-theme-type="light"] .category-badge.cat-econ { color: #a16207; }
+:root[data-theme-type="light"] .category-badge.cat-quant-ph { color: #6d28d9; }
+:root[data-theme-type="light"] .category-badge.cat-gr-qc { color: #dc2626; }
+:root[data-theme-type="light"] .category-badge.cat-nucl-th,
+:root[data-theme-type="light"] .category-badge.cat-nucl-ex { color: #92400e; }
+:root[data-theme-type="light"] .category-badge.cat-nlin { color: #a21caf; }
 
 .status-badge {
   color: white;
