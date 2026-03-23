@@ -12,13 +12,15 @@ function paramInt(val: string | string[]): number {
 // --- Similarity Scoring ---
 
 // POST /api/worldlines/similarity — compute similarity between browse papers and worldlines
-router.post('/similarity', (req: Request, res: Response) => {
+router.post('/similarity', async (req: Request, res: Response) => {
   try {
     const { papers, threshold } = req.body;
     if (!papers || !Array.isArray(papers)) {
       return res.status(400).json({ error: 'papers array is required' });
     }
-    const t = typeof threshold === 'number' ? threshold : 0.15;
+    // Default threshold for SPECTER is 0.82; clamp old TF-IDF thresholds
+    let t = typeof threshold === 'number' ? threshold : 0.82;
+    if (t < 0.60) t = 0.82;
 
     const worldlineProfiles = db.getAllWorldlinesWithPapers()
       .filter(wl => wl.papers.length > 0)
@@ -26,14 +28,14 @@ router.post('/similarity', (req: Request, res: Response) => {
         worldlineId: wl.id,
         worldlineName: wl.name,
         worldlineColor: wl.color,
-        papers: wl.papers,
+        papers: wl.papers.map(p => ({ arxiv_id: p.arxiv_id, title: p.title, summary: p.summary })),
       }));
 
     if (worldlineProfiles.length === 0) {
       return res.json({ results: [] });
     }
 
-    const results = computeWorldlineSimilarity(
+    const results = await computeWorldlineSimilarity(
       papers.map((p: any) => ({ id: p.id, title: p.title, summary: p.summary })),
       worldlineProfiles,
       t
