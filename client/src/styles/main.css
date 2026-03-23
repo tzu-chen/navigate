@@ -3675,21 +3675,46 @@ input[type="color"] {
     flex-basis: 100%;
   }
 
+  /* --- ArXiv ID bar: toggle + search on same line --- */
+  .arxiv-id-bar {
+    padding: 8px 12px;
+    gap: 6px;
+  }
+
+  .arxiv-id-bar label {
+    display: none;
+  }
+
+  .arxiv-id-bar .search-input-wrap {
+    max-width: none;
+  }
+
   /* Show browse search toggle on mobile */
   .mobile-search-toggle {
     display: block;
-    margin-bottom: 8px;
+    flex-shrink: 0;
   }
 
   .mobile-search-toggle-btn {
-    width: 100%;
+    width: auto;
     text-align: left;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    max-width: 45vw;
   }
 
   /* Collapse browse control row on mobile */
+  .browser-controls {
+    padding: 0;
+    border-bottom: none;
+  }
+
+  .browser-controls:has(.browser-control-row-wrap.expanded) {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color);
+  }
+
   .browser-control-row-wrap {
     display: none;
   }
