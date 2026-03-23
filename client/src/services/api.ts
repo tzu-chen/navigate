@@ -525,7 +525,7 @@ export interface AppSettings {
 const DEFAULT_SETTINGS: AppSettings = {
   claudeApiKey: '',
   colorScheme: 'default-dark',
-  similarityThreshold: 0.15,
+  similarityThreshold: 0.82,
   cardFontSize: 'medium',
 };
 

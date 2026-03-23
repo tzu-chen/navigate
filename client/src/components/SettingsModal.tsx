@@ -12,7 +12,7 @@ interface Props {
 export default function SettingsModal({ open, onClose, showNotification }: Props) {
   const [apiKey, setApiKey] = useState('');
   const [colorScheme, setColorScheme] = useState('default-dark');
-  const [similarityThreshold, setSimilarityThreshold] = useState(0.15);
+  const [similarityThreshold, setSimilarityThreshold] = useState(0.82);
   const [cardFontSize, setCardFontSize] = useState<AppSettings['cardFontSize']>('medium');
   const [verifying, setVerifying] = useState(false);
   const [showKey, setShowKey] = useState(false);
@@ -250,7 +250,7 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
             <div className="settings-section" style={{ marginTop: 24 }}>
               <h3>Worldline Similarity</h3>
               <p className="settings-description">
-                When browsing ArXiv, papers are scored against your existing worldlines using text similarity.
+                When browsing ArXiv, papers are scored against your existing worldlines using semantic similarity (SPECTER embeddings).
                 Adjust the threshold to control how sensitive the matching is.
                 Lower values show more matches, higher values require closer relevance.
               </p>
@@ -258,20 +258,20 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
               <div className="settings-field">
                 <label>Similarity Threshold: {similarityThreshold.toFixed(2)}</label>
                 <div className="settings-threshold-row">
-                  <span className="settings-threshold-label">0.05</span>
+                  <span className="settings-threshold-label">0.70</span>
                   <input
                     type="range"
-                    min="0.05"
-                    max="0.50"
+                    min="0.70"
+                    max="0.95"
                     step="0.01"
                     value={similarityThreshold}
                     onChange={e => setSimilarityThreshold(parseFloat(e.target.value))}
                     className="settings-threshold-slider"
                   />
-                  <span className="settings-threshold-label">0.50</span>
+                  <span className="settings-threshold-label">0.95</span>
                 </div>
                 <p className="settings-hint">
-                  Default: 0.15. Lower = more matches (less strict), Higher = fewer matches (more strict).
+                  Default: 0.82. Lower = more matches (less strict), Higher = fewer matches (more strict).
                 </p>
               </div>
             </div>

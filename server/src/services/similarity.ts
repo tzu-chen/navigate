@@ -1,4 +1,96 @@
-// TF-IDF based cosine similarity for matching browse papers to worldlines
+// SPECTER-based semantic similarity for matching browse papers to worldlines
+// Falls back to TF-IDF cosine similarity if the SPECTER model fails to load
+
+import { pipeline } from '@huggingface/transformers';
+import * as db from './database';
+
+const MODEL_NAME = 'Xenova/specter';
+const MODEL_VERSION = 'specter-v1';
+
+// --- SPECTER model management ---
+
+let extractorPipeline: Awaited<ReturnType<typeof pipeline>> | null = null;
+let pipelineInitPromise: Promise<Awaited<ReturnType<typeof pipeline>>> | null = null;
+let specterAvailable = true;
+
+async function getExtractor() {
+  if (extractorPipeline) return extractorPipeline;
+  if (pipelineInitPromise) return pipelineInitPromise;
+  pipelineInitPromise = pipeline('feature-extraction', MODEL_NAME).then(pipe => {
+    extractorPipeline = pipe;
+    console.log('SPECTER model loaded successfully');
+    return pipe;
+  }).catch(err => {
+    console.error('Failed to load SPECTER model, falling back to TF-IDF:', err);
+    specterAvailable = false;
+    pipelineInitPromise = null;
+    throw err;
+  });
+  return pipelineInitPromise;
+}
+
+// --- Embedding computation ---
+
+async function computeEmbeddings(texts: string[]): Promise<number[][]> {
+  const extractor = await getExtractor();
+  const output = await extractor(texts, { pooling: 'mean', normalize: true });
+  // The output is a Tensor; cast to access tolist()
+  return (output as any).tolist() as number[][];
+}
+
+async function getOrComputeEmbeddings(
+  papers: { arxiv_id: string; title: string; summary: string }[]
+): Promise<number[][]> {
+  if (papers.length === 0) return [];
+
+  const arxivIds = papers.map(p => p.arxiv_id);
+  const cached = db.getEmbeddings(arxivIds, MODEL_VERSION);
+  const cachedMap = new Map(cached.map(c => [c.arxiv_id, JSON.parse(c.embedding) as number[]]));
+
+  const missing = papers.filter(p => !cachedMap.has(p.arxiv_id));
+
+  if (missing.length > 0) {
+    const texts = missing.map(p => p.title + ' ' + p.summary);
+    const newEmbeddings = await computeEmbeddings(texts);
+    for (let i = 0; i < missing.length; i++) {
+      cachedMap.set(missing[i].arxiv_id, newEmbeddings[i]);
+      db.saveEmbedding(missing[i].arxiv_id, JSON.stringify(newEmbeddings[i]), MODEL_VERSION);
+    }
+  }
+
+  return arxivIds.map(id => cachedMap.get(id)!);
+}
+
+function cosineSimilarityVec(a: number[], b: number[]): number {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function meanEmbedding(embeddings: number[][]): number[] {
+  if (embeddings.length === 0) return [];
+  const dim = embeddings[0].length;
+  const mean = new Array(dim).fill(0);
+  for (const emb of embeddings) {
+    for (let i = 0; i < dim; i++) {
+      mean[i] += emb[i];
+    }
+  }
+  const n = embeddings.length;
+  for (let i = 0; i < dim; i++) {
+    mean[i] /= n;
+  }
+  return mean;
+}
+
+// --- TF-IDF fallback (original implementation) ---
 
 const STOP_WORDS = new Set([
   'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
@@ -52,7 +144,7 @@ function computeIDF(documents: Map<string, number>[], vocabulary: Set<string>): 
   return idf;
 }
 
-function cosineSimilarity(
+function tfidfCosineSimilarity(
   vec1: Map<string, number>,
   vec2: Map<string, number>,
   idf: Map<string, number>
@@ -60,10 +152,7 @@ function cosineSimilarity(
   let dotProduct = 0;
   let norm1 = 0;
   let norm2 = 0;
-
-  // Only iterate terms present in at least one vector for efficiency
   const terms = new Set([...vec1.keys(), ...vec2.keys()]);
-
   for (const term of terms) {
     const idfVal = idf.get(term) || 1;
     const v1 = (vec1.get(term) || 0) * idfVal;
@@ -72,16 +161,71 @@ function cosineSimilarity(
     norm1 += v1 * v1;
     norm2 += v2 * v2;
   }
-
   if (norm1 === 0 || norm2 === 0) return 0;
   return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
 }
+
+function computeWorldlineSimilarityTFIDF(
+  browsePapers: { id: string; title: string; summary: string }[],
+  worldlineProfiles: WorldlineProfile[],
+  threshold: number
+): PaperSimilarityResult[] {
+  if (browsePapers.length === 0 || worldlineProfiles.length === 0) return [];
+
+  const vocabulary = new Set<string>();
+  const browseDocTFs: Map<string, number>[] = [];
+  const worldlineDocTFs: Map<string, number>[] = [];
+
+  for (const paper of browsePapers) {
+    const tokens = tokenize(`${paper.title} ${paper.title} ${paper.summary}`);
+    const tf = computeTermFrequency(tokens);
+    browseDocTFs.push(tf);
+    for (const term of tf.keys()) vocabulary.add(term);
+  }
+
+  for (const profile of worldlineProfiles) {
+    const combinedText = profile.papers
+      .map(p => `${p.title} ${p.title} ${p.summary}`)
+      .join(' ');
+    const tokens = tokenize(combinedText);
+    const tf = computeTermFrequency(tokens);
+    worldlineDocTFs.push(tf);
+    for (const term of tf.keys()) vocabulary.add(term);
+  }
+
+  const allDocs = [...browseDocTFs, ...worldlineDocTFs];
+  const idf = computeIDF(allDocs, vocabulary);
+
+  const results: PaperSimilarityResult[] = [];
+  for (let i = 0; i < browsePapers.length; i++) {
+    const matches: SimilarityMatch[] = [];
+    for (let j = 0; j < worldlineProfiles.length; j++) {
+      const score = tfidfCosineSimilarity(browseDocTFs[i], worldlineDocTFs[j], idf);
+      if (score >= threshold) {
+        matches.push({
+          worldlineId: worldlineProfiles[j].worldlineId,
+          worldlineName: worldlineProfiles[j].worldlineName,
+          worldlineColor: worldlineProfiles[j].worldlineColor,
+          score: Math.round(score * 1000) / 1000,
+        });
+      }
+    }
+    if (matches.length > 0) {
+      matches.sort((a, b) => b.score - a.score);
+      results.push({ paperId: browsePapers[i].id, matches });
+    }
+  }
+
+  return results;
+}
+
+// --- Exported interfaces ---
 
 export interface WorldlineProfile {
   worldlineId: number;
   worldlineName: string;
   worldlineColor: string;
-  papers: { title: string; summary: string }[];
+  papers: { arxiv_id: string; title: string; summary: string }[];
 }
 
 export interface SimilarityMatch {
@@ -96,63 +240,58 @@ export interface PaperSimilarityResult {
   matches: SimilarityMatch[];
 }
 
-export function computeWorldlineSimilarity(
+// --- Main exported function ---
+
+export async function computeWorldlineSimilarity(
   browsePapers: { id: string; title: string; summary: string }[],
   worldlineProfiles: WorldlineProfile[],
   threshold: number
-): PaperSimilarityResult[] {
+): Promise<PaperSimilarityResult[]> {
   if (browsePapers.length === 0 || worldlineProfiles.length === 0) return [];
 
-  const vocabulary = new Set<string>();
-  const browseDocTFs: Map<string, number>[] = [];
-  const worldlineDocTFs: Map<string, number>[] = [];
-
-  // Tokenize browse papers — weight title more by repeating it
-  for (const paper of browsePapers) {
-    const tokens = tokenize(`${paper.title} ${paper.title} ${paper.summary}`);
-    const tf = computeTermFrequency(tokens);
-    browseDocTFs.push(tf);
-    for (const term of tf.keys()) vocabulary.add(term);
+  // Fall back to TF-IDF if SPECTER is unavailable
+  if (!specterAvailable) {
+    return computeWorldlineSimilarityTFIDF(browsePapers, worldlineProfiles, threshold);
   }
 
-  // Tokenize worldline profiles — combine all papers in each worldline
-  for (const profile of worldlineProfiles) {
-    const combinedText = profile.papers
-      .map(p => `${p.title} ${p.title} ${p.summary}`)
-      .join(' ');
-    const tokens = tokenize(combinedText);
-    const tf = computeTermFrequency(tokens);
-    worldlineDocTFs.push(tf);
-    for (const term of tf.keys()) vocabulary.add(term);
-  }
+  try {
+    // Compute worldline mean embeddings from cached paper embeddings
+    const worldlineEmbeddings: (number[] | null)[] = [];
+    for (const profile of worldlineProfiles) {
+      const paperEmbeddings = await getOrComputeEmbeddings(profile.papers);
+      worldlineEmbeddings.push(paperEmbeddings.length > 0 ? meanEmbedding(paperEmbeddings) : null);
+    }
 
-  // Compute IDF across all documents
-  const allDocs = [...browseDocTFs, ...worldlineDocTFs];
-  const idf = computeIDF(allDocs, vocabulary);
+    // Compute browse paper embeddings on-the-fly (not cached)
+    const browseTexts = browsePapers.map(p => p.title + ' ' + p.summary);
+    const browseEmbeddings = await computeEmbeddings(browseTexts);
 
-  // Compute similarities
-  const results: PaperSimilarityResult[] = [];
-  for (let i = 0; i < browsePapers.length; i++) {
-    const matches: SimilarityMatch[] = [];
-    for (let j = 0; j < worldlineProfiles.length; j++) {
-      const score = cosineSimilarity(browseDocTFs[i], worldlineDocTFs[j], idf);
-      if (score >= threshold) {
-        matches.push({
-          worldlineId: worldlineProfiles[j].worldlineId,
-          worldlineName: worldlineProfiles[j].worldlineName,
-          worldlineColor: worldlineProfiles[j].worldlineColor,
-          score: Math.round(score * 1000) / 1000,
-        });
+    // Compute similarities
+    const results: PaperSimilarityResult[] = [];
+    for (let i = 0; i < browsePapers.length; i++) {
+      const matches: SimilarityMatch[] = [];
+      for (let j = 0; j < worldlineProfiles.length; j++) {
+        const wlEmb = worldlineEmbeddings[j];
+        if (!wlEmb) continue;
+        const score = cosineSimilarityVec(browseEmbeddings[i], wlEmb);
+        if (score >= threshold) {
+          matches.push({
+            worldlineId: worldlineProfiles[j].worldlineId,
+            worldlineName: worldlineProfiles[j].worldlineName,
+            worldlineColor: worldlineProfiles[j].worldlineColor,
+            score: Math.round(score * 1000) / 1000,
+          });
+        }
+      }
+      if (matches.length > 0) {
+        matches.sort((a, b) => b.score - a.score);
+        results.push({ paperId: browsePapers[i].id, matches });
       }
     }
-    if (matches.length > 0) {
-      matches.sort((a, b) => b.score - a.score);
-      results.push({
-        paperId: browsePapers[i].id,
-        matches,
-      });
-    }
-  }
 
-  return results;
+    return results;
+  } catch (error) {
+    console.error('SPECTER similarity failed, falling back to TF-IDF:', error);
+    return computeWorldlineSimilarityTFIDF(browsePapers, worldlineProfiles, threshold);
+  }
 }

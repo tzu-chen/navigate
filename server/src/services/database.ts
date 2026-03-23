@@ -118,10 +118,18 @@ export function initializeDatabase(): void {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS paper_embeddings (
+      arxiv_id TEXT PRIMARY KEY,
+      embedding TEXT NOT NULL,
+      model_version TEXT NOT NULL DEFAULT 'specter-v1',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_arxiv_id ON chat_sessions(arxiv_id);
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_worldline_id ON chat_sessions(worldline_id);
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_type ON chat_sessions(session_type);
     CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
+    CREATE INDEX IF NOT EXISTS idx_paper_embeddings_model ON paper_embeddings(model_version);
   `);
 
   // Migration: add pdf_path column if it doesn't exist
@@ -310,7 +318,7 @@ export function getAllWorldlinesWithPapers(): {
   id: number;
   name: string;
   color: string;
-  papers: { title: string; summary: string }[];
+  papers: { arxiv_id: string; title: string; summary: string }[];
 }[] {
   const worldlines = db.prepare('SELECT id, name, color FROM worldlines ORDER BY id').all() as {
     id: number;
@@ -319,14 +327,14 @@ export function getAllWorldlinesWithPapers(): {
   }[];
 
   const paperStmt = db.prepare(`
-    SELECT p.title, p.summary FROM papers p
+    SELECT p.arxiv_id, p.title, p.summary FROM papers p
     JOIN worldline_papers wp ON p.id = wp.paper_id
     WHERE wp.worldline_id = ?
   `);
 
   return worldlines.map(wl => ({
     ...wl,
-    papers: paperStmt.all(wl.id) as { title: string; summary: string }[],
+    papers: paperStmt.all(wl.id) as { arxiv_id: string; title: string; summary: string }[],
   }));
 }
 
@@ -375,6 +383,31 @@ export function getRelatedPaperTitlesByArxivId(arxivId: string): { worldlineName
       titles: (titlesStmt.all(wl.id, paper.id) as { title: string }[]).map(r => r.title),
     }))
     .filter(wl => wl.titles.length > 0);
+}
+
+// Paper embedding operations
+export function getEmbedding(arxivId: string, modelVersion: string): { arxiv_id: string; embedding: string; model_version: string } | undefined {
+  return db.prepare(
+    'SELECT arxiv_id, embedding, model_version FROM paper_embeddings WHERE arxiv_id = ? AND model_version = ?'
+  ).get(arxivId, modelVersion) as { arxiv_id: string; embedding: string; model_version: string } | undefined;
+}
+
+export function getEmbeddings(arxivIds: string[], modelVersion: string): { arxiv_id: string; embedding: string }[] {
+  if (arxivIds.length === 0) return [];
+  const placeholders = arxivIds.map(() => '?').join(',');
+  return db.prepare(
+    `SELECT arxiv_id, embedding FROM paper_embeddings WHERE arxiv_id IN (${placeholders}) AND model_version = ?`
+  ).all(...arxivIds, modelVersion) as { arxiv_id: string; embedding: string }[];
+}
+
+export function saveEmbedding(arxivId: string, embedding: string, modelVersion: string): void {
+  db.prepare(
+    'INSERT OR REPLACE INTO paper_embeddings (arxiv_id, embedding, model_version) VALUES (?, ?, ?)'
+  ).run(arxivId, embedding, modelVersion);
+}
+
+export function deleteEmbeddingsByModelVersion(modelVersion: string): void {
+  db.prepare('DELETE FROM paper_embeddings WHERE model_version = ?').run(modelVersion);
 }
 
 // PDF path operations
