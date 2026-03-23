@@ -4,8 +4,8 @@
 import { pipeline } from '@huggingface/transformers';
 import * as db from './database';
 
-const MODEL_NAME = 'Xenova/specter';
-const MODEL_VERSION = 'specter-v1';
+const MODEL_NAME = 'Xenova/all-MiniLM-L6-v2';
+const MODEL_VERSION = 'all-MiniLM-L6-v2';
 
 // --- SPECTER model management ---
 
