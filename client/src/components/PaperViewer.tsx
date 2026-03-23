@@ -206,7 +206,7 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
           </span>
           <span>{new Date(paper.published).toLocaleDateString()}</span>
           {categories.map(c => (
-            <span key={c} className="category-badge">{c}</span>
+            <span key={c} className={`category-badge cat-${c.includes('.') ? c.split('.')[0] : c}`}>{c}</span>
           ))}
           {paperTags.map(t => (
             <span key={t.id} className="tag-badge" style={{ backgroundColor: t.color }}>
