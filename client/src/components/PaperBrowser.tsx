@@ -78,7 +78,8 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
     api.getSettings().then(settings => {
       return api.checkWorldlineSimilarity(
         papers.map(p => ({ id: p.id, title: p.title, summary: p.summary })),
-        settings.similarityThreshold
+        settings.similarityThreshold,
+        selectedCategory
       );
     }).then(results => {
       if (controller.signal.aborted) return;

@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import * as db from '../services/database';
 import { getArxivPaper } from '../services/arxiv';
-import { computeWorldlineSimilarity } from '../services/similarity';
+import { computeWorldlineSimilarity, PaperSimilarityResult } from '../services/similarity';
 
 const router = Router();
 
@@ -9,18 +9,71 @@ function paramInt(val: string | string[]): number {
   return parseInt(String(val), 10);
 }
 
+// --- Similarity Cache ---
+// Caches results per category until the next arXiv refresh (20:00 ET, Sun–Thu).
+// Invalidated when worldlines are mutated (papers added/removed, worldline created/deleted).
+
+const ANNOUNCEMENT_HOUR = 20; // 20:00 ET
+const ANNOUNCEMENT_DAYS = new Set([0, 1, 2, 3, 4]); // Sun=0 through Thu=4
+
+function getNextArxivRefreshTime(): number {
+  const now = new Date();
+  // Get current time in ET
+  const etStr = now.toLocaleString('en-US', { timeZone: 'America/New_York' });
+  const et = new Date(etStr);
+  const currentDay = et.getDay();
+  const currentSeconds = et.getHours() * 3600 + et.getMinutes() * 60 + et.getSeconds();
+  const targetSeconds = ANNOUNCEMENT_HOUR * 3600;
+  const isBeforeAnnouncement = currentSeconds < targetSeconds;
+
+  let daysUntil: number;
+  if (ANNOUNCEMENT_DAYS.has(currentDay) && isBeforeAnnouncement) {
+    daysUntil = 0;
+  } else {
+    let next = (currentDay + 1) % 7;
+    daysUntil = 1;
+    while (!ANNOUNCEMENT_DAYS.has(next)) {
+      next = (next + 1) % 7;
+      daysUntil++;
+    }
+  }
+
+  const remainingSeconds = daysUntil * 86400 + (targetSeconds - currentSeconds);
+  return now.getTime() + remainingSeconds * 1000;
+}
+
+interface SimilarityCacheEntry {
+  results: PaperSimilarityResult[];
+  expiresAt: number; // timestamp ms
+}
+
+const similarityCache = new Map<string, SimilarityCacheEntry>();
+
+function invalidateSimilarityCache() {
+  similarityCache.clear();
+}
+
 // --- Similarity Scoring ---
 
 // POST /api/worldlines/similarity — compute similarity between browse papers and worldlines
 router.post('/similarity', async (req: Request, res: Response) => {
   try {
-    const { papers, threshold } = req.body;
+    const { papers, threshold, category } = req.body;
     if (!papers || !Array.isArray(papers)) {
       return res.status(400).json({ error: 'papers array is required' });
     }
     // Default threshold for SPECTER is 0.82; clamp old TF-IDF thresholds
     let t = typeof threshold === 'number' ? threshold : 0.82;
     if (t < 0.60) t = 0.82;
+
+    // Check cache if category is provided
+    const cacheKey = category ? `${category}:${t}` : null;
+    if (cacheKey) {
+      const cached = similarityCache.get(cacheKey);
+      if (cached && Date.now() < cached.expiresAt) {
+        return res.json({ results: cached.results });
+      }
+    }
 
     const worldlineProfiles = db.getAllWorldlinesWithPapers()
       .filter(wl => wl.papers.length > 0)
@@ -40,6 +93,14 @@ router.post('/similarity', async (req: Request, res: Response) => {
       worldlineProfiles,
       t
     );
+
+    // Cache results until next arXiv refresh
+    if (cacheKey) {
+      similarityCache.set(cacheKey, {
+        results,
+        expiresAt: getNextArxivRefreshTime(),
+      });
+    }
 
     res.json({ results });
   } catch (error) {
@@ -160,6 +221,10 @@ router.post('/batch-import', async (req: Request, res: Response) => {
       }
     }
 
+    if (targetWorldlineIds.length > 0) {
+      invalidateSimilarityCache();
+    }
+
     res.status(201).json({
       success: true,
       papers_added: savedPapers.length,
@@ -208,6 +273,7 @@ router.post('/', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'name is required' });
     }
     const result = db.createWorldline(name, color || '#6366f1');
+    invalidateSimilarityCache();
     res.status(201).json({ id: result.lastInsertRowid, name, color: color || '#6366f1' });
   } catch (error) {
     console.error('Create worldline error:', error);
@@ -234,6 +300,7 @@ router.put('/:id', (req: Request, res: Response) => {
 router.delete('/:id', (req: Request, res: Response) => {
   try {
     db.deleteWorldline(paramInt(req.params.id));
+    invalidateSimilarityCache();
     res.json({ success: true });
   } catch (error) {
     console.error('Delete worldline error:', error);
@@ -260,6 +327,7 @@ router.post('/:id/papers', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'paper_id is required' });
     }
     db.addWorldlinePaper(paramInt(req.params.id), paper_id, position ?? 0);
+    invalidateSimilarityCache();
     res.status(201).json({ success: true });
   } catch (error) {
     console.error('Add worldline paper error:', error);
@@ -271,6 +339,7 @@ router.post('/:id/papers', (req: Request, res: Response) => {
 router.delete('/:id/papers/:paperId', (req: Request, res: Response) => {
   try {
     db.removeWorldlinePaper(paramInt(req.params.id), paramInt(req.params.paperId));
+    invalidateSimilarityCache();
     res.json({ success: true });
   } catch (error) {
     console.error('Remove worldline paper error:', error);

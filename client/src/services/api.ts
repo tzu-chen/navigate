@@ -501,11 +501,12 @@ export async function getRelatedPaperArxivIds(arxivId: string): Promise<{ arxivI
 // Worldline Similarity
 export async function checkWorldlineSimilarity(
   papers: { id: string; title: string; summary: string }[],
-  threshold: number
+  threshold: number,
+  category?: string
 ): Promise<PaperSimilarityResult[]> {
   const data = await request<{ results: PaperSimilarityResult[] }>('/worldlines/similarity', {
     method: 'POST',
-    body: JSON.stringify({ papers, threshold }),
+    body: JSON.stringify({ papers, threshold, category }),
   });
   return data.results;
 }
