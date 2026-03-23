@@ -3698,6 +3698,23 @@ input[type="color"] {
     display: block;
   }
 
+  /* --- Announcement Tabs (New / Cross-listed / Replacements) --- */
+  .announcement-tabs {
+    padding: 0 8px;
+  }
+
+  .announcement-tab {
+    padding: 8px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .announcement-tab-count {
+    margin-left: 4px;
+    padding: 0 5px;
+    font-size: 10px;
+  }
+
   /* Show mobile actions toggle */
   .mobile-actions-toggle {
     display: flex !important;
