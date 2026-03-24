@@ -10,6 +10,7 @@ import ChatHistory from './components/ChatHistory';
 import WorldlinePanel from './components/WorldlinePanel';
 import SettingsModal from './components/SettingsModal';
 import ArxivRefreshTimer from './components/ArxivRefreshTimer';
+import ErrorBoundary from './components/ErrorBoundary';
 import Icon from './components/Icon';
 
 export default function App() {
@@ -308,25 +309,32 @@ export default function App() {
           />
         )}
         {viewMode === 'viewer' && (selectedPaper || previewPaper) && (
-          <PaperViewer
-            paper={(selectedPaper || previewPaper)!}
-            isInLibrary={!!selectedPaper}
-            onSavePaper={previewPaper ? async () => { await handleSaveFromViewer(previewPaper); } : undefined}
-            onDeletePaper={selectedPaper ? async () => { await handleDeleteFromViewer(selectedPaper); } : undefined}
-            allTags={tags}
-            onTagsChanged={loadLibrary}
-            showNotification={showNotification}
-            favoriteAuthorNames={favoriteAuthorNames}
-            onFavoriteAuthor={handleFavoriteAuthor}
-            onSearchAuthor={handleSearchAuthor}
-            onOpenPaper={handleOpenPaper}
-            browsePapers={browsePapers}
-            browsePageOffset={browsePageOffset}
-            browseTotalResults={browseTotalResults}
-            onBrowseNavigate={handleBrowseNavigate}
-            onImmersiveModeChange={setImmersiveMode}
-            onLibraryRefresh={loadLibrary}
-          />
+          <ErrorBoundary
+            onError={(err) => {
+              console.error('PaperViewer error:', err);
+              showNotification('An error occurred while viewing the paper.');
+            }}
+          >
+            <PaperViewer
+              paper={(selectedPaper || previewPaper)!}
+              isInLibrary={!!selectedPaper}
+              onSavePaper={previewPaper ? async () => { await handleSaveFromViewer(previewPaper); } : undefined}
+              onDeletePaper={selectedPaper ? async () => { await handleDeleteFromViewer(selectedPaper); } : undefined}
+              allTags={tags}
+              onTagsChanged={loadLibrary}
+              showNotification={showNotification}
+              favoriteAuthorNames={favoriteAuthorNames}
+              onFavoriteAuthor={handleFavoriteAuthor}
+              onSearchAuthor={handleSearchAuthor}
+              onOpenPaper={handleOpenPaper}
+              browsePapers={browsePapers}
+              browsePageOffset={browsePageOffset}
+              browseTotalResults={browseTotalResults}
+              onBrowseNavigate={handleBrowseNavigate}
+              onImmersiveModeChange={setImmersiveMode}
+              onLibraryRefresh={loadLibrary}
+            />
+          </ErrorBoundary>
         )}
       </main>
 
