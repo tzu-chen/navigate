@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { SavedPaper, ArxivPaper, Comment, Tag } from '../types';
 import * as api from '../services/api';
 import PDFViewer from './PDFViewer';
@@ -112,6 +112,39 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
     }
   }, [paper]);
 
+  // Swipe left/right to navigate between papers (mobile)
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const viewerBodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!canBrowseNav) return;
+    const el = viewerBodyRef.current;
+    if (!el) return;
+
+    const onTouchStart = (e: TouchEvent) => {
+      touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (!touchStartRef.current) return;
+      const dx = e.changedTouches[0].clientX - touchStartRef.current.x;
+      const dy = e.changedTouches[0].clientY - touchStartRef.current.y;
+      touchStartRef.current = null;
+      if (Math.abs(dx) < 80 || Math.abs(dy) > Math.abs(dx) * 0.5) return;
+      if (dx > 0 && hasPrev) {
+        onBrowseNavigate!(browsePapers![browseIndex - 1]);
+      } else if (dx < 0 && hasNext) {
+        onBrowseNavigate!(browsePapers![browseIndex + 1]);
+      }
+    };
+
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchend', onTouchEnd);
+    };
+  }, [canBrowseNav, hasPrev, hasNext, browseIndex, browsePapers, onBrowseNavigate]);
+
   return (
     <div className={`paper-viewer ${immersiveMode ? 'immersive-mode' : ''}`}>
       <div className="viewer-header">
@@ -216,7 +249,7 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
         </div>
       </div>
 
-      <div className="viewer-body">
+      <div className="viewer-body" ref={viewerBodyRef}>
         <div className="viewer-pdf">
           <PDFViewer
             pdfUrl={saved?.pdf_path ? api.getLocalPdfUrl(saved.id) : (arxivId.startsWith('upload-') ? '' : api.getPdfProxyUrl(arxivId))}
