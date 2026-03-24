@@ -114,7 +114,10 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
       for (const page of pages) {
         const rect = page.getBoundingClientRect();
         if (rect.top <= containerTop + 50) {
-          visiblePage = Number(page.getAttribute('data-page-number'));
+          const pageNum = Number(page.getAttribute('data-page-number'));
+          if (!isNaN(pageNum)) {
+            visiblePage = pageNum;
+          }
         }
       }
 
@@ -179,6 +182,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
   }, []);
 
   const goToPage = useCallback((page: number) => {
+    if (isNaN(page)) return;
     const clamped = Math.max(1, Math.min(page, numPages));
     updateCurrentPage(clamped);
     scrollToPage(clamped);
@@ -195,7 +199,9 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
       if (Array.isArray(explicitDest)) {
         const ref = explicitDest[0];
         const pageIndex = await pdfDocRef.current.getPageIndex(ref);
-        goToPage(pageIndex + 1);
+        if (typeof pageIndex === 'number' && !isNaN(pageIndex)) {
+          goToPage(pageIndex + 1);
+        }
       }
     } catch (err) {
       console.error('Failed to navigate to outline destination:', err);
@@ -426,6 +432,11 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
                   pageNumber={i + 1}
                   scale={scale}
                   loading=""
+                  error={
+                    <div className="pdf-page-error">
+                      <p>Page {i + 1} failed to render</p>
+                    </div>
+                  }
                 />
               </div>
             ))}
