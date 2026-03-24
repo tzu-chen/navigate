@@ -1459,6 +1459,21 @@ input[type="color"] {
   border-color: var(--accent) !important;
 }
 
+.pdf-theme-override {
+  position: relative;
+}
+
+.pdf-theme-override::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  background: var(--warning);
+  border-radius: 50%;
+}
+
 /* Override react-pdf annotation layer link colors to match theme */
 .pdf-page-wrapper .react-pdf__Page__annotations a {
   color: var(--accent);
