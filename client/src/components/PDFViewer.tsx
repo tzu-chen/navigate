@@ -329,15 +329,6 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
           >
             {pdfDarkTheme ? <Icon name="sun" /> : <Icon name="moon" />}
           </button>
-          {onToggleImmersive && (
-            <button
-              className={`pdf-nav-btn ${immersiveMode ? 'pdf-nav-btn-active' : ''}`}
-              onClick={onToggleImmersive}
-              title={immersiveMode ? 'Exit immersive mode (Esc)' : 'Immersive mode — hide all toolbars'}
-            >
-              {immersiveMode ? <Icon name="close" /> : <Icon name="expand" />}
-            </button>
-          )}
           <a
             href={pdfUrl}
             target="_blank"
@@ -348,6 +339,16 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
           </a>
         </div>
       </div>
+
+      {onToggleImmersive && (
+        <button
+          className={`pdf-fullscreen-btn ${immersiveMode ? 'pdf-nav-btn-active' : ''}`}
+          onClick={onToggleImmersive}
+          title={immersiveMode ? 'Exit immersive mode (Esc)' : 'Immersive mode — hide all toolbars'}
+        >
+          {immersiveMode ? <Icon name="close" /> : <Icon name="expand" />}
+        </button>
+      )}
 
       {error && (
         <div className="pdf-error">
