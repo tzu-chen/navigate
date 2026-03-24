@@ -35,7 +35,12 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [pdfDarkTheme, setPdfDarkTheme] = useState(() => {
-    return localStorage.getItem('pdfDarkTheme') === 'true';
+    const stored = localStorage.getItem('pdfDarkTheme');
+    if (stored !== null) return stored === 'true';
+    return document.documentElement.getAttribute('data-theme-type') === 'dark';
+  });
+  const [pdfThemeOverride, setPdfThemeOverride] = useState(() => {
+    return localStorage.getItem('pdfDarkTheme') !== null;
   });
   const containerRef = useRef<HTMLDivElement>(null);
   const currentPageRef = useRef(1);
@@ -57,6 +62,17 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
   useEffect(() => {
     hasInitialScale.current = false;
   }, [pdfUrl]);
+
+  // Sync PDF dark mode with app theme when no user override
+  useEffect(() => {
+    if (pdfThemeOverride) return;
+    const observer = new MutationObserver(() => {
+      const isDark = document.documentElement.getAttribute('data-theme-type') === 'dark';
+      setPdfDarkTheme(isDark);
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme-type'] });
+    return () => observer.disconnect();
+  }, [pdfThemeOverride]);
 
   // Track current page via scroll position
   useEffect(() => {
@@ -197,8 +213,16 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     setPdfDarkTheme(prev => {
       const next = !prev;
       localStorage.setItem('pdfDarkTheme', String(next));
+      setPdfThemeOverride(true);
       return next;
     });
+  };
+
+  const resetPdfThemeToAuto = () => {
+    localStorage.removeItem('pdfDarkTheme');
+    setPdfThemeOverride(false);
+    const isDark = document.documentElement.getAttribute('data-theme-type') === 'dark';
+    setPdfDarkTheme(isDark);
   };
 
   function renderOutlineItems(items: OutlineItem[], level: number = 0, parentKey: string = '') {
@@ -296,9 +320,12 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
 
         <div className="pdf-toolbar-group">
           <button
-            className={`pdf-nav-btn ${pdfDarkTheme ? 'pdf-nav-btn-active' : ''}`}
+            className={`pdf-nav-btn ${pdfDarkTheme ? 'pdf-nav-btn-active' : ''} ${pdfThemeOverride ? 'pdf-theme-override' : ''}`}
             onClick={togglePdfDarkTheme}
-            title={pdfDarkTheme ? 'Switch to light mode' : 'Switch to dark mode'}
+            onDoubleClick={resetPdfThemeToAuto}
+            title={pdfDarkTheme
+              ? `Switch to light mode${pdfThemeOverride ? ' (double-click to reset to auto)' : ''}`
+              : `Switch to dark mode${pdfThemeOverride ? ' (double-click to reset to auto)' : ''}`}
           >
             {pdfDarkTheme ? <Icon name="sun" /> : <Icon name="moon" />}
           </button>
