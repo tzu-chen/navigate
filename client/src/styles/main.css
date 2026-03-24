@@ -3957,25 +3957,49 @@ input[type="color"] {
 
   /* --- Paper Viewer --- */
   .viewer-header {
-    padding: 8px 12px;
+    padding: 6px 12px;
   }
 
   .viewer-title-row {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 8px;
+    align-items: center;
   }
 
   .viewer-title-row h2 {
     font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
 
   .viewer-title-actions {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 4px;
+  }
+
+  /* Hide browse nav and ArXiv Page link on mobile — use swipe instead */
+  .viewer-title-actions .browse-nav,
+  .viewer-title-actions > a.btn {
+    display: none;
   }
 
   .viewer-meta {
     gap: 6px;
+    flex-wrap: nowrap;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+  }
+
+  .viewer-meta .paper-authors {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex-shrink: 1;
   }
 
   /* Sidebar as full-screen overlay on mobile */
@@ -4001,9 +4025,9 @@ input[type="color"] {
     z-index: 199;
   }
 
+  /* Hide sidebar toggle on mobile */
   .sidebar-toggle {
-    width: 32px;
-    font-size: 12px;
+    display: none;
   }
 
   .sidebar-tab {
@@ -4014,26 +4038,32 @@ input[type="color"] {
   /* --- PDF Toolbar --- */
   .pdf-toolbar {
     padding: 4px 8px;
-    gap: 6px;
-    flex-wrap: wrap;
-    justify-content: center;
+    gap: 4px;
+    flex-wrap: nowrap;
+    justify-content: space-between;
   }
 
   .pdf-toolbar-group {
-    gap: 4px;
+    gap: 2px;
   }
 
   .pdf-nav-btn {
-    width: 36px;
-    height: 36px;
-    font-size: 14px;
+    width: 32px;
+    height: 32px;
+    font-size: 13px;
   }
 
   .pdf-page-input {
-    height: 32px;
+    height: 28px;
+    width: 36px;
   }
 
   .pdf-zoom-level {
+    display: none;
+  }
+
+  /* Hide Open in New Tab on mobile */
+  .pdf-toolbar .btn.btn-secondary.btn-sm {
     display: none;
   }
 
