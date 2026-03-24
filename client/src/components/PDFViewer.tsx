@@ -340,16 +340,6 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
         </div>
       </div>
 
-      {onToggleImmersive && (
-        <button
-          className={`pdf-fullscreen-btn ${immersiveMode ? 'pdf-nav-btn-active' : ''}`}
-          onClick={onToggleImmersive}
-          title={immersiveMode ? 'Exit immersive mode (Esc)' : 'Immersive mode — hide all toolbars'}
-        >
-          {immersiveMode ? <Icon name="close" /> : <Icon name="expand" />}
-        </button>
-      )}
-
       {error && (
         <div className="pdf-error">
           <p>Failed to load PDF.</p>
@@ -365,6 +355,15 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
       )}
 
       <div className="pdf-content-area">
+        {onToggleImmersive && (
+          <button
+            className={`pdf-fullscreen-btn ${immersiveMode ? 'pdf-nav-btn-active' : ''}`}
+            onClick={onToggleImmersive}
+            title={immersiveMode ? 'Exit immersive mode (Esc)' : 'Immersive mode — hide all toolbars'}
+          >
+            {immersiveMode ? <Icon name="close" /> : <Icon name="expand" />}
+          </button>
+        )}
         {outlineOpen && outline.length > 0 && (
           <div className="pdf-outline-panel">
             <div className="pdf-outline-header">
