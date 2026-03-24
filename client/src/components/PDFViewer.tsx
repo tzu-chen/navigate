@@ -48,6 +48,8 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pdfDocRef = useRef<any>(null);
   const hasInitialScale = useRef(false);
+  const pageWidthRef = useRef(0);
+  const lastContainerWidthRef = useRef(0);
 
   const updateCurrentPage = useCallback((page: number) => {
     if (page !== currentPageRef.current) {
@@ -61,7 +63,30 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
   // Reset initial scale flag when PDF changes
   useEffect(() => {
     hasInitialScale.current = false;
+    pageWidthRef.current = 0;
   }, [pdfUrl]);
+
+  // Re-fit PDF to width on container resize (e.g. orientation change on mobile)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (pageWidthRef.current <= 0) return;
+      const currentWidth = container.clientWidth;
+      // Only refit when width change is significant (>50px) to filter out scrollbar jitter
+      if (Math.abs(currentWidth - lastContainerWidthRef.current) > 50) {
+        lastContainerWidthRef.current = currentWidth;
+        const containerWidth = currentWidth - 20;
+        if (containerWidth > 0) {
+          setScale(containerWidth / pageWidthRef.current);
+        }
+      }
+    });
+
+    resizeObserver.observe(container);
+    return () => resizeObserver.disconnect();
+  }, []);
 
   // Sync PDF dark mode with app theme when no user override
   useEffect(() => {
@@ -115,6 +140,8 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
         const viewport = page.getViewport({ scale: 1 });
         // Account for padding/scrollbar in the container
         const containerWidth = container.clientWidth - 20;
+        pageWidthRef.current = viewport.width;
+        lastContainerWidthRef.current = container.clientWidth;
         if (viewport.width > 0 && containerWidth > 0) {
           const fitScale = containerWidth / viewport.width;
           setScale(fitScale);
