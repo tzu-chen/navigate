@@ -182,41 +182,43 @@ export default function App() {
     <div className="app">
       {!immersiveMode && <header className="app-header">
         <div className="header-left">
-          <h1 className="app-title" onClick={() => { setSelectedPaper(null); setViewMode('browse'); }}>
-            Navigate
-          </h1>
           {viewMode !== 'viewer' && (
             <>
-              <nav className="nav-tabs">
+              <nav className="icon-rail">
                 <button
-                  className={`nav-tab ${viewMode === 'browse' ? 'active' : ''}`}
+                  className={`icon-rail-btn ${viewMode === 'browse' ? 'active' : ''}`}
                   onClick={() => setViewMode('browse')}
+                  title="Browse ArXiv"
                 >
-                  Browse ArXiv
+                  <Icon name="compass" size="18px" />
                 </button>
                 <button
-                  className={`nav-tab ${viewMode === 'library' ? 'active' : ''}`}
+                  className={`icon-rail-btn ${viewMode === 'library' ? 'active' : ''}`}
                   onClick={() => setViewMode('library')}
+                  title={`My Library (${savedPapers.length})`}
                 >
-                  My Library ({savedPapers.length})
+                  <Icon name="book" size="18px" />
                 </button>
                 <button
-                  className={`nav-tab ${viewMode === 'authors' ? 'active' : ''}`}
+                  className={`icon-rail-btn ${viewMode === 'authors' ? 'active' : ''}`}
                   onClick={() => setViewMode('authors')}
+                  title={`Favorite Authors (${favoriteAuthors.length})`}
                 >
-                  Favorite Authors ({favoriteAuthors.length})
+                  <Icon name="users" size="18px" />
                 </button>
                 <button
-                  className={`nav-tab ${viewMode === 'worldline' ? 'active' : ''}`}
+                  className={`icon-rail-btn ${viewMode === 'worldline' ? 'active' : ''}`}
                   onClick={() => setViewMode('worldline')}
+                  title="Worldlines"
                 >
-                  Worldlines
+                  <Icon name="branch" size="18px" />
                 </button>
                 <button
-                  className={`nav-tab ${viewMode === 'chatHistory' ? 'active' : ''}`}
+                  className={`icon-rail-btn ${viewMode === 'chatHistory' ? 'active' : ''}`}
                   onClick={() => setViewMode('chatHistory')}
+                  title="Chat History"
                 >
-                  Chat History
+                  <Icon name="chat" size="18px" />
                 </button>
               </nav>
               <select
@@ -234,7 +236,7 @@ export default function App() {
           )}
           {viewMode === 'viewer' && (
             <button className="back-btn" onClick={handleBackFromViewer}>
-              &larr; Back to {viewModeLabels[previousViewMode]}
+              <Icon name="arrow-left" size="14px" /> Back to {viewModeLabels[previousViewMode]}
             </button>
           )}
         </div>

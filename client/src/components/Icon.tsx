@@ -14,7 +14,13 @@ type IconName =
   | 'chevron-left'
   | 'chevron-down'
   | 'triangle-left'
-  | 'triangle-right';
+  | 'triangle-right'
+  | 'compass'
+  | 'book'
+  | 'users'
+  | 'branch'
+  | 'chat'
+  | 'arrow-left';
 
 interface IconProps {
   name: IconName;
@@ -68,6 +74,24 @@ const paths: Record<IconName, React.ReactNode> = {
   ),
   'triangle-right': (
     <path d="M5 3l6 5-6 5V3z" />
+  ),
+  compass: (
+    <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.2a5.8 5.8 0 1 1 0 11.6A5.8 5.8 0 0 1 8 2.2zM6.2 6.2l5.3-1.7-1.7 5.3-5.3 1.7 1.7-5.3zm1.8.6a1 1 0 1 0 0 2 1 1 0 0 0 0-2z" fillRule="evenodd" />
+  ),
+  book: (
+    <path d="M2 2.5A.5.5 0 0 1 2.5 2h3.05a2.5 2.5 0 0 1 2.15 1.23L8 3.8l.3-.57A2.5 2.5 0 0 1 10.45 2h3.05a.5.5 0 0 1 .5.5v10a.5.5 0 0 1-.5.5h-3.5a1.5 1.5 0 0 0-1.3.75.5.5 0 0 1-.86.01l-.01-.01A1.5 1.5 0 0 0 6.5 13H3a.5.5 0 0 1-.5-.5v-10zm5.5 2.1A1.5 1.5 0 0 0 6.05 3H3v9h3.5a2.5 2.5 0 0 1 1 .2V4.6zm1 0V12.2a2.5 2.5 0 0 1 1-.2H13V3h-3.05A1.5 1.5 0 0 0 8.5 4.6z" fillRule="evenodd" />
+  ),
+  users: (
+    <path d="M6 4a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm8 0a2 2 0 1 1-4 0 2 2 0 0 1 4 0zM4 8c-1.7 0-3 .8-3 2.5V12h6v-1.5C7 8.8 5.7 8 4 8zm8 0c-1.7 0-3 .8-3 2.5V12h6v-1.5C15 8.8 13.7 8 12 8z" />
+  ),
+  branch: (
+    <path d="M4 2a2 2 0 0 0-1 3.73V10.27A2 2 0 1 0 5 10.27V8.5c.6.3 1.3.5 2 .5h2a2 2 0 0 0 2-2v-.77A2 2 0 1 0 9 5.73V7a1 1 0 0 1-1 1H7a4 4 0 0 1-2-.54V5.73A2 2 0 0 0 4 2zm0 1a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm6 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2zM4 11a1 1 0 1 1 0 2 1 1 0 0 1 0-2z" fillRule="evenodd" />
+  ),
+  chat: (
+    <path d="M2.5 2A1.5 1.5 0 0 0 1 3.5v7A1.5 1.5 0 0 0 2.5 12H4v2.5L8 12h5.5A1.5 1.5 0 0 0 15 10.5v-7A1.5 1.5 0 0 0 13.5 2h-11zM4.5 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm3.5 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm3.5 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2z" fillRule="evenodd" />
+  ),
+  'arrow-left': (
+    <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
   ),
 };
 

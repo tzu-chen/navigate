@@ -66,49 +66,42 @@ html, body {
 .header-left {
   display: flex;
   align-items: center;
-  gap: 24px;
   width: 100%;
 }
 
-.app-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--accent);
-  cursor: pointer;
-  white-space: nowrap;
-  letter-spacing: -0.3px;
-}
-
-.nav-tabs {
+.icon-rail {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 2px;
 }
 
-.nav-tab {
-  padding: 6px 16px;
+.icon-rail-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
   border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-weight: 500;
   transition: all var(--transition);
+}
+
+.icon-rail-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.icon-rail-btn.active {
+  background: var(--accent);
+  color: white;
 }
 
 /* Nav dropdown - hidden on desktop, shown on mobile */
 .nav-dropdown {
   display: none;
-}
-
-.nav-tab:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-.nav-tab.active {
-  background: var(--accent);
-  color: white;
 }
 
 .back-btn {
@@ -3756,13 +3749,8 @@ input[type="color"] {
     min-width: 0;
   }
 
-  .app-title {
-    font-size: 15px;
-    flex-shrink: 0;
-  }
-
-  /* Hide tab buttons on mobile, show dropdown */
-  .nav-tabs {
+  /* Hide icon rail on mobile, show dropdown */
+  .icon-rail {
     display: none;
   }
 
