@@ -249,6 +249,13 @@ export async function createTag(name: string, color: string): Promise<Tag> {
   });
 }
 
+export async function updateTag(id: number, name: string, color: string): Promise<void> {
+  await request(`/tags/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ name, color }),
+  });
+}
+
 export async function deleteTag(id: number): Promise<void> {
   await request(`/tags/${id}`, { method: 'DELETE' });
 }
