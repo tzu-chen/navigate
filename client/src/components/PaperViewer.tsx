@@ -46,6 +46,7 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
   const [sidebarVisible, setSidebarVisible] = useState(false);
   const [immersiveMode, setImmersiveMode] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [sendingToScribe, setSendingToScribe] = useState(false);
 
   const saved = isSavedPaper(paper) ? paper : null;
   const arxivId = saved ? saved.arxiv_id : (paper as ArxivPaper).id;
@@ -188,6 +189,30 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
               <>
                 <button className="btn btn-success btn-sm" disabled>
                   In Library
+                </button>
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={sendingToScribe}
+                  onClick={async () => {
+                    if (!saved) return;
+                    if (!confirm(`Send "${paper.title}" to Scribe? It will be removed from Navigate.`)) return;
+                    setSendingToScribe(true);
+                    try {
+                      const result = await api.sendToScribe([saved.id]);
+                      if (result.sent > 0) {
+                        showNotification('Sent to Scribe');
+                        if (onDeletePaper) await onDeletePaper();
+                      } else {
+                        showNotification(result.errors[0] || 'Failed to send to Scribe');
+                      }
+                    } catch {
+                      showNotification('Failed to send to Scribe. Is Scribe running?');
+                    } finally {
+                      setSendingToScribe(false);
+                    }
+                  }}
+                >
+                  {sendingToScribe ? 'Sending...' : 'Send to Scribe'}
                 </button>
                 {onDeletePaper && (
                   <button

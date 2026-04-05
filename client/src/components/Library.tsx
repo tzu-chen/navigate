@@ -215,6 +215,25 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
     }
   }
 
+  async function handleBulkSendToScribe() {
+    if (!confirm(`Send ${selectedPaperIds.size} paper(s) to Scribe? Papers will be removed from Navigate.`)) return;
+    setBulkLoading(true);
+    setBulkAction('Sending to Scribe');
+    try {
+      const result = await api.sendToScribe(Array.from(selectedPaperIds));
+      const msg = `Sent ${result.sent} paper(s) to Scribe${result.failed > 0 ? `, ${result.failed} failed` : ''}`;
+      showNotification(msg);
+      if (result.errors.length > 0) console.warn('Send to Scribe errors:', result.errors);
+      setSelectedPaperIds(new Set());
+      await onRefresh();
+    } catch {
+      showNotification('Failed to send papers to Scribe. Is Scribe running?');
+    } finally {
+      setBulkLoading(false);
+      setBulkAction(null);
+    }
+  }
+
   async function handleBulkDelete() {
     if (!confirm(`Delete ${selectedPaperIds.size} paper(s) from your library? This cannot be undone.`)) return;
     setBulkLoading(true);
@@ -665,6 +684,9 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
               <option key={tag.id} value={tag.id}>{tag.name}</option>
             ))}
           </select>
+          <button className="btn btn-primary btn-sm" onClick={handleBulkSendToScribe} disabled={bulkLoading}>
+            Send to Scribe
+          </button>
           <button className="btn btn-danger btn-sm" onClick={handleBulkDelete} disabled={bulkLoading}>
             Delete Papers
           </button>

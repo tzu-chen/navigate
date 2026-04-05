@@ -149,6 +149,18 @@ export async function bulkDeletePdfs(paperIds: number[]): Promise<{
   });
 }
 
+// Scribe integration
+export async function sendToScribe(paperIds: number[]): Promise<{
+  sent: number;
+  failed: number;
+  errors: string[];
+}> {
+  return request('/scribe/send', {
+    method: 'POST',
+    body: JSON.stringify({ paper_ids: paperIds }),
+  });
+}
+
 export async function bulkDeletePapers(paperIds: number[]): Promise<{
   success: boolean;
   deleted: number;

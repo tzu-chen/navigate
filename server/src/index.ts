@@ -11,6 +11,7 @@ import authorsRoutes from './routes/authors';
 import chatRoutes from './routes/chat';
 import worldlinesRoutes from './routes/worldlines';
 import settingsRoutes from './routes/settings';
+import scribeRoutes from './routes/scribe';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -28,6 +29,7 @@ app.use('/api/authors', authorsRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/worldlines', worldlinesRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/scribe', scribeRoutes);
 
 // Serve static frontend in production
 const clientBuildPath = path.join(__dirname, '..', '..', 'client', 'dist');
