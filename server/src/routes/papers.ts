@@ -76,7 +76,7 @@ router.post('/', (req: Request, res: Response) => {
 });
 
 // POST /api/papers/upload - Upload a PDF as an external reference
-router.post('/upload', upload.single('pdf'), (req: Request, res: Response) => {
+router.post('/upload', upload.single('pdf'), async (req: Request, res: Response) => {
   try {
     const file = (req as any).file as { buffer: Buffer; originalname: string } | undefined;
     if (!file) {
@@ -89,7 +89,7 @@ router.post('/upload', upload.single('pdf'), (req: Request, res: Response) => {
     }
 
     const arxivId = `upload-${crypto.randomUUID()}`;
-    const pdfPath = storeUploadedPdf(file.buffer);
+    const pdfPath = await storeUploadedPdf(file.buffer);
 
     const result = db.savePaper({
       arxiv_id: arxivId,

@@ -26,6 +26,15 @@ interface Props {
   onToggleImmersive?: () => void;
 }
 
+// Detect mobile once — used to tune buffer sizes and canvas resolution
+const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+  (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
+
+// Cap canvas resolution: mobile gets 1x to avoid blowing through GPU memory limits,
+// desktop/tablet gets up to 2x for crisp text without excess memory use.
+const canvasPixelRatio = isMobile ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+
+
 export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggleImmersive }: Props) {
   const [numPages, setNumPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
@@ -42,6 +51,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
   const [pdfThemeOverride, setPdfThemeOverride] = useState(() => {
     return localStorage.getItem('pdfDarkTheme') !== null;
   });
+  const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set([1]));
   const containerRef = useRef<HTMLDivElement>(null);
   const currentPageRef = useRef(1);
   const [pageInputValue, setPageInputValue] = useState('1');
@@ -50,6 +60,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
   const hasInitialScale = useRef(false);
   const pageWidthRef = useRef(0);
   const lastContainerWidthRef = useRef(0);
+  const pageHeightRef = useRef(0);
 
   const updateCurrentPage = useCallback((page: number) => {
     if (page !== currentPageRef.current) {
@@ -60,10 +71,12 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     }
   }, [onPageChange]);
 
-  // Reset initial scale flag when PDF changes
+  // Reset state when PDF changes
   useEffect(() => {
     hasInitialScale.current = false;
     pageWidthRef.current = 0;
+    pageHeightRef.current = 0;
+    setVisiblePages(new Set([1]));
   }, [pdfUrl]);
 
   // Re-fit PDF to width on container resize (e.g. orientation change on mobile)
@@ -99,17 +112,21 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     return () => observer.disconnect();
   }, [pdfThemeOverride]);
 
-  // Track current page via scroll position
+  // Track current page via scroll position and update visible pages for virtualization
   useEffect(() => {
     const container = containerRef.current;
     if (!container || numPages === 0) return;
 
-    const handleScroll = () => {
+    const BUFFER = isMobile ? 1 : 3; // fewer buffered pages on mobile to save memory
+
+    const updateVisibility = () => {
       const pages = container.querySelectorAll('[data-page-number]');
       if (pages.length === 0) return;
 
       const containerTop = container.getBoundingClientRect().top;
+      const containerBottom = containerTop + container.clientHeight;
       let visiblePage = 1;
+      const newVisible = new Set<number>();
 
       for (const page of pages) {
         const rect = page.getBoundingClientRect();
@@ -119,13 +136,31 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
             visiblePage = pageNum;
           }
         }
+        // Check if page is in or near the viewport
+        const pageNum = Number(page.getAttribute('data-page-number'));
+        if (!isNaN(pageNum) && rect.bottom >= containerTop - container.clientHeight * BUFFER && rect.top <= containerBottom + container.clientHeight * BUFFER) {
+          newVisible.add(pageNum);
+        }
+      }
+
+      // Always include a buffer around current page as fallback
+      for (let i = Math.max(1, visiblePage - BUFFER); i <= Math.min(numPages, visiblePage + BUFFER); i++) {
+        newVisible.add(i);
       }
 
       updateCurrentPage(visiblePage);
+      setVisiblePages(prev => {
+        // Avoid unnecessary re-renders by checking if the set actually changed
+        if (prev.size === newVisible.size && [...newVisible].every(p => prev.has(p))) return prev;
+        return newVisible;
+      });
     };
 
-    container.addEventListener('scroll', handleScroll, { passive: true });
-    return () => container.removeEventListener('scroll', handleScroll);
+    // Initial visibility calculation
+    updateVisibility();
+
+    container.addEventListener('scroll', updateVisibility, { passive: true });
+    return () => container.removeEventListener('scroll', updateVisibility);
   }, [numPages, updateCurrentPage]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -137,13 +172,14 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     // Calculate fit-to-width scale from the first page
     if (!hasInitialScale.current) {
       hasInitialScale.current = true;
-      pdf.getPage(1).then((page: { getViewport: (opts: { scale: number }) => { width: number } }) => {
+      pdf.getPage(1).then((page: { getViewport: (opts: { scale: number }) => { width: number; height: number } }) => {
         const container = containerRef.current;
         if (!container) return;
         const viewport = page.getViewport({ scale: 1 });
         // Account for padding/scrollbar in the container
         const containerWidth = container.clientWidth - 20;
         pageWidthRef.current = viewport.width;
+        pageHeightRef.current = viewport.height;
         lastContainerWidthRef.current = container.clientWidth;
         if (viewport.width > 0 && containerWidth > 0) {
           const fitScale = containerWidth / viewport.width;
@@ -427,17 +463,23 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
                 key={i + 1}
                 data-page-number={i + 1}
                 className="pdf-page-wrapper"
+                style={!visiblePages.has(i + 1) && pageHeightRef.current > 0
+                  ? { height: `${pageHeightRef.current * scale}px`, minHeight: `${pageHeightRef.current * scale}px` }
+                  : undefined}
               >
-                <Page
-                  pageNumber={i + 1}
-                  scale={scale}
-                  loading=""
-                  error={
-                    <div className="pdf-page-error">
-                      <p>Page {i + 1} failed to render</p>
-                    </div>
-                  }
-                />
+                {visiblePages.has(i + 1) ? (
+                  <Page
+                    pageNumber={i + 1}
+                    scale={scale}
+                    devicePixelRatio={canvasPixelRatio}
+                    loading=""
+                    error={
+                      <div className="pdf-page-error">
+                        <p>Page {i + 1} failed to render</p>
+                      </div>
+                    }
+                  />
+                ) : null}
               </div>
             ))}
           </Document>

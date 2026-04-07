@@ -1,9 +1,39 @@
 import { Router, Request, Response } from 'express';
 import { searchArxiv, getArxivPaper, fetchLatestArxiv, fetchRecentArxiv } from '../services/arxiv';
 import { ARXIV_CATEGORY_GROUPS } from '../types';
-import { getLocalPdfPathForArxivId } from '../services/pdf';
+import { getLocalPdfPathForArxivId, initializePdfStorage, optimizePdf } from '../services/pdf';
+import fs from 'fs';
+import path from 'path';
 
 const router = Router();
+
+const PROXY_CACHE_DIR = path.join(__dirname, '..', '..', 'data', 'pdf-cache');
+const MAX_CACHE_FILES = 50;
+
+if (!fs.existsSync(PROXY_CACHE_DIR)) fs.mkdirSync(PROXY_CACHE_DIR, { recursive: true });
+
+/** Remove least-recently-accessed files when cache exceeds MAX_CACHE_FILES. */
+function evictProxyCache() {
+  try {
+    const entries = fs.readdirSync(PROXY_CACHE_DIR)
+      .filter(f => f.endsWith('.pdf'))
+      .map(f => {
+        const filePath = path.join(PROXY_CACHE_DIR, f);
+        return { filePath, atime: fs.statSync(filePath).atimeMs };
+      });
+
+    if (entries.length <= MAX_CACHE_FILES) return;
+
+    // Sort oldest-accessed first, remove excess
+    entries.sort((a, b) => a.atime - b.atime);
+    const toRemove = entries.slice(0, entries.length - MAX_CACHE_FILES);
+    for (const entry of toRemove) {
+      fs.unlinkSync(entry.filePath);
+    }
+  } catch (err) {
+    console.warn('Proxy cache eviction error:', err);
+  }
+}
 
 // GET /api/arxiv/categories - List available category groups
 router.get('/categories', (_req: Request, res: Response) => {
@@ -87,6 +117,19 @@ router.get('/pdf-proxy/:id(*)', async (req: Request, res: Response) => {
       return res.sendFile(localPath);
     }
 
+    // Check for a cached optimized copy in the proxy cache
+    initializePdfStorage();
+    const cachedPath = path.join(PROXY_CACHE_DIR, arxivId.replace(/\//g, '_') + '.pdf');
+
+    if (fs.existsSync(cachedPath)) {
+      // Touch atime so LRU eviction keeps recently viewed files
+      const now = new Date();
+      fs.utimesSync(cachedPath, now, fs.statSync(cachedPath).mtime);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${arxivId.replace('/', '_')}.pdf"`);
+      return res.sendFile(cachedPath);
+    }
+
     const pdfUrl = `https://arxiv.org/pdf/${arxivId}`;
     const response = await fetch(pdfUrl);
     if (!response.ok) {
@@ -94,9 +137,16 @@ router.get('/pdf-proxy/:id(*)', async (req: Request, res: Response) => {
     }
 
     const buffer = await response.arrayBuffer();
+    // Write to cache, optimize, then serve the optimized version
+    fs.writeFileSync(cachedPath, Buffer.from(buffer));
+    await optimizePdf(cachedPath);
+
+    // Evict oldest cached files if cache has grown too large
+    evictProxyCache();
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${arxivId.replace('/', '_')}.pdf"`);
-    res.send(Buffer.from(buffer));
+    res.sendFile(cachedPath);
   } catch (error) {
     console.error('PDF proxy error:', error);
     res.status(500).json({ error: 'Failed to proxy PDF' });
