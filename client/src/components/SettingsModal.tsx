@@ -13,7 +13,7 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
   const [apiKey, setApiKey] = useState('');
   const [colorScheme, setColorScheme] = useState('default-dark');
   const [similarityThreshold, setSimilarityThreshold] = useState(0.82);
-  const [cardFontSize, setCardFontSize] = useState<AppSettings['cardFontSize']>('medium');
+  const [cardFontSize, setCardFontSize] = useState<number>(1);
   const [verifying, setVerifying] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -55,7 +55,7 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
     }
   };
 
-  const handleFontSizeChange = (size: AppSettings['cardFontSize']) => {
+  const handleFontSizeChange = (size: number) => {
     setCardFontSize(size);
     api.applyCardFontSize(size);
   };
@@ -175,17 +175,24 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
                 Adjust the font size of paper titles and abstracts in browse and library cards.
               </p>
 
-              <div className="font-size-options">
-                {(['small', 'medium', 'large'] as const).map(size => (
-                  <button
-                    key={size}
-                    className={`font-size-option ${cardFontSize === size ? 'active' : ''}`}
-                    onClick={() => handleFontSizeChange(size)}
-                  >
-                    <span className="font-size-label">{size.charAt(0).toUpperCase() + size.slice(1)}</span>
-                    <span className={`font-size-preview font-size-preview-${size}`}>Aa</span>
-                  </button>
-                ))}
+              <div className="font-size-slider-container">
+                <input
+                  type="range"
+                  className="font-size-slider"
+                  min="0.7"
+                  max="2.5"
+                  step="0.05"
+                  value={cardFontSize}
+                  onChange={e => handleFontSizeChange(parseFloat(e.target.value))}
+                />
+                <div className="font-size-slider-labels">
+                  <span>A</span>
+                  <span style={{ fontSize: '1.4em' }}>A</span>
+                  <span style={{ fontSize: '2em' }}>A</span>
+                </div>
+                <span className="font-size-preview" style={{ fontSize: `${cardFontSize * 16}px` }}>
+                  Aa — Preview
+                </span>
               </div>
             </div>
 

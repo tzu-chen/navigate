@@ -543,27 +543,35 @@ export interface AppSettings {
   claudeApiKey: string;
   colorScheme: string;
   similarityThreshold: number;
-  cardFontSize: 'small' | 'medium' | 'large';
+  cardFontSize: number;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   claudeApiKey: '',
   colorScheme: 'default-dark',
   similarityThreshold: 0.82,
-  cardFontSize: 'medium',
+  cardFontSize: 1,
 };
 
 interface VisualPrefs {
   colorScheme: string;
-  cardFontSize: 'small' | 'medium' | 'large';
+  cardFontSize: number;
 }
 
 function getVisualPrefs(): VisualPrefs {
   try {
     const stored = localStorage.getItem(VISUAL_PREFS_KEY);
-    if (stored) return { colorScheme: 'default-dark', cardFontSize: 'medium', ...JSON.parse(stored) };
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      // Migrate old string values to numeric
+      if (typeof parsed.cardFontSize === 'string') {
+        const migration: Record<string, number> = { small: 0.85, medium: 1, large: 1.2 };
+        parsed.cardFontSize = migration[parsed.cardFontSize] ?? 1;
+      }
+      return { colorScheme: 'default-dark', cardFontSize: 1, ...parsed };
+    }
   } catch {}
-  return { colorScheme: 'default-dark', cardFontSize: 'medium' };
+  return { colorScheme: 'default-dark', cardFontSize: 1 };
 }
 
 function saveVisualPrefs(prefs: VisualPrefs): void {
@@ -605,14 +613,8 @@ export function getVisualPrefsSync(): VisualPrefs {
   return getVisualPrefs();
 }
 
-const FONT_SIZE_SCALES: Record<AppSettings['cardFontSize'], string> = {
-  small: '0.85',
-  medium: '1',
-  large: '1.2',
-};
-
-export function applyCardFontSize(size: AppSettings['cardFontSize']): void {
-  document.documentElement.style.setProperty('--card-font-scale', FONT_SIZE_SCALES[size] || '1');
+export function applyCardFontSize(size: number): void {
+  document.documentElement.style.setProperty('--card-font-scale', String(size));
 }
 
 // Chat History (server-side)
