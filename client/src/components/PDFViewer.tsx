@@ -30,9 +30,8 @@ interface Props {
 const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
   (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
 
-// Cap canvas resolution: mobile gets 1x to avoid blowing through GPU memory limits,
-// desktop/tablet gets up to 2x for crisp text without excess memory use.
-const canvasPixelRatio = isMobile ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+// Cap canvas resolution at 2x for crisp text without excess memory use.
+const canvasPixelRatio = Math.min(window.devicePixelRatio || 1, 2);
 
 
 export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggleImmersive }: Props) {
