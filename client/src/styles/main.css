@@ -678,23 +678,17 @@ input[type="color"] {
   background: var(--bg-tertiary);
   color: var(--text-secondary);
   padding: calc(2px * var(--card-font-scale, 1)) calc(14px * var(--card-font-scale, 1)) calc(2px * var(--card-font-scale, 1)) calc(8px * var(--card-font-scale, 1));
-  border-radius: 2px 0 0 2px;
   font-size: calc(11px * var(--card-font-scale, 1));
   font-family: 'SF Mono', 'Fira Code', monospace;
   border-left: 2.5px solid var(--text-muted);
   line-height: 1.4;
-}
-
-.category-badge::after {
-  content: '';
-  position: absolute;
-  right: calc(-8px * var(--card-font-scale, 1));
-  top: 0;
-  width: 0;
-  height: 0;
-  border-top: calc(10px * var(--card-font-scale, 1)) solid transparent;
-  border-bottom: calc(10px * var(--card-font-scale, 1)) solid transparent;
-  border-left: calc(8px * var(--card-font-scale, 1)) solid var(--bg-tertiary);
+  clip-path: polygon(
+    0 0,
+    calc(100% - 8px * var(--card-font-scale, 1)) 0,
+    100% 50%,
+    calc(100% - 8px * var(--card-font-scale, 1)) 100%,
+    0 100%
+  );
 }
 
 /* Category group colors */
