@@ -232,6 +232,17 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     scrollToPage(clamped);
   }, [numPages, updateCurrentPage, scrollToPage]);
 
+  // react-pdf's <Document> captures onItemClick inside a useRef on first render,
+  // so any closure passed inline would see numPages=0 and clamp every jump to page 1.
+  // Route through a ref to always hit the current goToPage.
+  const goToPageRef = useRef(goToPage);
+  useEffect(() => {
+    goToPageRef.current = goToPage;
+  }, [goToPage]);
+  const handleItemClick = useCallback(({ pageNumber }: { pageNumber: number }) => {
+    goToPageRef.current(pageNumber);
+  }, []);
+
   const navigateToOutlineDest = useCallback(async (dest: string | unknown[] | null) => {
     if (!dest || !pdfDocRef.current) return;
 
@@ -466,6 +477,9 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
             onLoadError={onDocumentLoadError}
             loading={<div className="pdf-loading">Loading PDF...</div>}
             options={documentOptions}
+            externalLinkTarget="_blank"
+            externalLinkRel="noopener noreferrer"
+            onItemClick={handleItemClick}
           >
             {Array.from({ length: numPages }, (_, i) => (
               <div
