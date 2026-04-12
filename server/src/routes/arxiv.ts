@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { searchArxiv, getArxivPaper, fetchLatestArxiv, fetchRecentArxiv } from '../services/arxiv';
 import { ARXIV_CATEGORY_GROUPS } from '../types';
-import { getLocalPdfPathForArxivId, initializePdfStorage, optimizePdf } from '../services/pdf';
+import { getLocalPdfPathForArxivId, initializePdfStorage } from '../services/pdf';
 import fs from 'fs';
 import path from 'path';
 
@@ -137,9 +137,7 @@ router.get('/pdf-proxy/:id(*)', async (req: Request, res: Response) => {
     }
 
     const buffer = await response.arrayBuffer();
-    // Write to cache, optimize, then serve the optimized version
     fs.writeFileSync(cachedPath, Buffer.from(buffer));
-    await optimizePdf(cachedPath);
 
     // Evict oldest cached files if cache has grown too large
     evictProxyCache();

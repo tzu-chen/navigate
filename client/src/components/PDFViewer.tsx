@@ -10,6 +10,15 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
+const documentOptions = {
+  cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/cmaps/`,
+  cMapPacked: true,
+  standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/standard_fonts/`,
+  // Cap decoded image size to ~25 megapixels to prevent mobile browser crashes
+  // from papers with oversized embedded graphics (e.g. 10000x6000 figures).
+  maxImageSize: 25 * 1024 * 1024,
+};
+
 interface OutlineItem {
   title: string;
   bold: boolean;
@@ -456,6 +465,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
             onLoadSuccess={onDocumentLoadSuccess}
             onLoadError={onDocumentLoadError}
             loading={<div className="pdf-loading">Loading PDF...</div>}
+            options={documentOptions}
           >
             {Array.from({ length: numPages }, (_, i) => (
               <div

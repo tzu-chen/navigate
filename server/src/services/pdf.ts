@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { execFile } from 'child_process';
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const PDF_DIR = path.join(DATA_DIR, 'pdfs');
@@ -51,53 +50,7 @@ export async function downloadAndStorePdf(arxivId: string): Promise<string | nul
   const buffer = await response.arrayBuffer();
   fs.writeFileSync(absPath, Buffer.from(buffer));
 
-  // Downsample any oversized embedded images so they don't crash mobile browsers
-  await optimizePdf(absPath);
-
   return relativePath;
-}
-
-/**
- * Downsample oversized images in a PDF using Ghostscript.
- * Rewrites the file in-place. If gs is unavailable or fails, the original is kept.
- */
-export function optimizePdf(absPath: string): Promise<void> {
-  return new Promise((resolve) => {
-    const tmpPath = absPath + '.opt';
-    execFile('gs', [
-      '-sDEVICE=pdfwrite',
-      '-dCompatibilityLevel=1.7',
-      '-dDownsampleColorImages=true',
-      '-dColorImageResolution=300',
-      '-dDownsampleGrayImages=true',
-      '-dGrayImageResolution=300',
-      '-dDownsampleMonoImages=true',
-      '-dMonoImageResolution=600',
-      '-dAutoFilterColorImages=false',
-      '-dColorImageFilter=/DCTEncode',
-      '-dAutoFilterGrayImages=false',
-      '-dGrayImageFilter=/DCTEncode',
-      '-dNOPAUSE',
-      '-dBATCH',
-      '-dQUIET',
-      `-sOutputFile=${tmpPath}`,
-      absPath,
-    ], { timeout: 60_000 }, (error) => {
-      if (error) {
-        // Clean up temp file on failure, keep original
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        console.warn(`PDF optimization skipped (gs failed): ${error.message}`);
-        resolve();
-        return;
-      }
-      try {
-        fs.renameSync(tmpPath, absPath);
-      } catch {
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      }
-      resolve();
-    });
-  });
 }
 
 export function deleteLocalPdf(relativePath: string): boolean {
@@ -120,6 +73,5 @@ export async function storeUploadedPdf(buffer: Buffer): Promise<string> {
   const filename = `upload-${uuid}.pdf`;
   const absPath = path.join(PDF_DIR, filename);
   fs.writeFileSync(absPath, buffer);
-  await optimizePdf(absPath);
   return `pdfs/${filename}`;
 }
