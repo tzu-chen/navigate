@@ -34,15 +34,17 @@ interface Props {
   onBrowseNavigate?: (paper: ArxivPaper) => void;
   onImmersiveModeChange?: (immersive: boolean) => void;
   onLibraryRefresh?: () => Promise<void>;
+  initialPage?: number;
 }
 
 type SidePanel = 'chat' | 'comments' | 'export' | 'info' | 'worldline' | 'import';
 
-export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeletePaper, allTags, onTagsChanged, showNotification, favoriteAuthorNames, onFavoriteAuthor, onSearchAuthor, onOpenPaper, browsePapers, browsePageOffset = 0, browseTotalResults = 0, onBrowseNavigate, onImmersiveModeChange, onLibraryRefresh }: Props) {
+export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeletePaper, allTags, onTagsChanged, showNotification, favoriteAuthorNames, onFavoriteAuthor, onSearchAuthor, onOpenPaper, browsePapers, browsePageOffset = 0, browseTotalResults = 0, onBrowseNavigate, onImmersiveModeChange, onLibraryRefresh, initialPage }: Props) {
   const [comments, setComments] = useState<Comment[]>([]);
   const [paperTags, setPaperTags] = useState<Tag[]>([]);
   const [activePanel, setActivePanel] = useState<SidePanel>(isSavedPaper(paper) ? 'comments' : 'info');
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
+  const [jumpToPage, setJumpToPage] = useState<number | undefined>(initialPage);
   const [sidebarVisible, setSidebarVisible] = useState(false);
   const [immersiveMode, setImmersiveMode] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -112,6 +114,15 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
       setActivePanel(prev => prev === 'info' ? 'comments' : prev);
     }
   }, [paper]);
+
+  // Re-arm page jump + open comments panel whenever parent supplies a new initialPage
+  useEffect(() => {
+    if (initialPage !== undefined) {
+      setJumpToPage(initialPage);
+      setSidebarVisible(true);
+      if (isSavedPaper(paper)) setActivePanel('comments');
+    }
+  }, [initialPage, paper]);
 
   // Swipe left/right to navigate between papers (mobile)
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -281,6 +292,8 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
             onPageChange={setCurrentPage}
             immersiveMode={immersiveMode}
             onToggleImmersive={() => setImmersiveMode(m => !m)}
+            jumpToPage={jumpToPage}
+            onJumpApplied={() => setJumpToPage(undefined)}
           />
         </div>
 

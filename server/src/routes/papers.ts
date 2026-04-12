@@ -118,6 +118,17 @@ router.post('/upload', upload.single('pdf'), async (req: Request, res: Response)
   }
 });
 
+// GET /api/papers/comments/all - List every comment with parent paper info
+// Must be above /:id routes so it isn't captured by the :id param
+router.get('/comments/all', (_req: Request, res: Response) => {
+  try {
+    res.json(db.getAllComments());
+  } catch (error) {
+    console.error('Get all comments error:', error);
+    res.status(500).json({ error: 'Failed to get comments' });
+  }
+});
+
 // --- Bulk Operations (must be before /:id routes) ---
 
 // POST /api/papers/bulk/download-pdfs

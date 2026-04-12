@@ -7,6 +7,7 @@ import Library from './components/Library';
 import PaperViewer from './components/PaperViewer';
 import FavoriteAuthors from './components/FavoriteAuthors';
 import ChatHistory from './components/ChatHistory';
+import Comments from './components/Comments';
 import WorldlinePanel from './components/WorldlinePanel';
 import SettingsModal from './components/SettingsModal';
 import ArxivRefreshTimer from './components/ArxivRefreshTimer';
@@ -28,6 +29,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [immersiveMode, setImmersiveMode] = useState(false);
   const [pendingAuthorSearch, setPendingAuthorSearch] = useState<string | null>(null);
+  const [initialPaperPage, setInitialPaperPage] = useState<number | undefined>(undefined);
 
   const showNotification = useCallback((msg: string) => {
     setNotification(msg);
@@ -100,9 +102,10 @@ export default function App() {
     }
   };
 
-  const handleOpenPaper = (paper: SavedPaper) => {
+  const handleOpenPaper = (paper: SavedPaper, page?: number) => {
     setPreviousViewMode(viewMode);
     setSelectedPaper(paper);
+    setInitialPaperPage(page);
     setBrowsePapers([]);
     setViewMode('viewer');
   };
@@ -166,6 +169,7 @@ export default function App() {
     authors: 'Authors',
     worldline: 'Worldlines',
     chatHistory: 'Chat History',
+    comments: 'Comments',
     viewer: 'Library',
   };
 
@@ -220,6 +224,13 @@ export default function App() {
                 >
                   <Icon name="chat" size="18px" />
                 </button>
+                <button
+                  className={`icon-rail-btn ${viewMode === 'comments' ? 'active' : ''}`}
+                  onClick={() => setViewMode('comments')}
+                  title="All Comments"
+                >
+                  <Icon name="pencil" size="18px" />
+                </button>
               </nav>
               <select
                 className="nav-dropdown"
@@ -231,6 +242,7 @@ export default function App() {
                 <option value="authors">Favorite Authors ({favoriteAuthors.length})</option>
                 <option value="worldline">Worldlines</option>
                 <option value="chatHistory">Chat History</option>
+                <option value="comments">Comments</option>
               </select>
             </>
           )}
@@ -310,6 +322,13 @@ export default function App() {
             showNotification={showNotification}
           />
         )}
+        {viewMode === 'comments' && (
+          <Comments
+            savedPapers={savedPapers}
+            onOpenPaper={handleOpenPaper}
+            showNotification={showNotification}
+          />
+        )}
         {viewMode === 'viewer' && (selectedPaper || previewPaper) && (
           <ErrorBoundary
             onError={(err) => {
@@ -335,6 +354,7 @@ export default function App() {
               onBrowseNavigate={handleBrowseNavigate}
               onImmersiveModeChange={setImmersiveMode}
               onLibraryRefresh={loadLibrary}
+              initialPage={initialPaperPage}
             />
           </ErrorBoundary>
         )}

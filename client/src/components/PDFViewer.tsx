@@ -33,6 +33,8 @@ interface Props {
   onPageChange?: (page: number) => void;
   immersiveMode?: boolean;
   onToggleImmersive?: () => void;
+  jumpToPage?: number;
+  onJumpApplied?: () => void;
 }
 
 // Detect mobile once — used to tune buffer sizes and canvas resolution
@@ -43,7 +45,7 @@ const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
 const canvasPixelRatio = Math.min(window.devicePixelRatio || 1, 2);
 
 
-export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggleImmersive }: Props) {
+export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggleImmersive, jumpToPage, onJumpApplied }: Props) {
   const [numPages, setNumPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [scale, setScale] = useState(1.2);
@@ -231,6 +233,14 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     updateCurrentPage(clamped);
     scrollToPage(clamped);
   }, [numPages, updateCurrentPage, scrollToPage]);
+
+  // Apply externally-requested page jumps once the document is loaded.
+  // Waits for numPages > 0 so a jump issued before load still lands correctly.
+  useEffect(() => {
+    if (jumpToPage === undefined || numPages === 0) return;
+    goToPage(jumpToPage);
+    onJumpApplied?.();
+  }, [jumpToPage, numPages, goToPage, onJumpApplied]);
 
   // react-pdf's <Document> captures onItemClick inside a useRef on first render,
   // so any closure passed inline would see numPages=0 and clamp every jump to page 1.

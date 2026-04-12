@@ -41,6 +41,12 @@ export interface Comment {
   updated_at: string;
 }
 
+export interface CommentWithPaper extends Comment {
+  arxiv_id: string;
+  title: string;
+  authors: string;
+}
+
 export interface Tag {
   id: number;
   name: string;
@@ -110,4 +116,4 @@ export interface WorldlineChatSession {
   updatedAt: string;
 }
 
-export type ViewMode = 'browse' | 'library' | 'authors' | 'viewer' | 'chatHistory' | 'worldline';
+export type ViewMode = 'browse' | 'library' | 'authors' | 'viewer' | 'chatHistory' | 'worldline' | 'comments';

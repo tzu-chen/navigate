@@ -220,6 +220,17 @@ export function deleteComment(id: number) {
   return db.prepare('DELETE FROM comments WHERE id = ?').run(id);
 }
 
+export function getAllComments() {
+  return db.prepare(`
+    SELECT
+      c.id, c.paper_id, c.content, c.page_number, c.created_at, c.updated_at,
+      p.arxiv_id, p.title, p.authors
+    FROM comments c
+    JOIN papers p ON p.id = c.paper_id
+    ORDER BY c.created_at DESC
+  `).all();
+}
+
 // Tag operations
 export function createTag(name: string, color: string = '#6366f1') {
   return db.prepare('INSERT INTO tags (name, color) VALUES (?, ?)').run(name, color);

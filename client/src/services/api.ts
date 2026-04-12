@@ -1,4 +1,4 @@
-import { ArxivPaper, SavedPaper, Comment, Tag, CategoryGroup, FavoriteAuthor, ChatMessage, ChatSession, WorldlineChatSession, Worldline, PaperSimilarityResult } from '../types';
+import { ArxivPaper, SavedPaper, Comment, CommentWithPaper, Tag, CategoryGroup, FavoriteAuthor, ChatMessage, ChatSession, WorldlineChatSession, Worldline, PaperSimilarityResult } from '../types';
 
 const BASE = '/api';
 
@@ -204,6 +204,10 @@ export async function bulkRemoveTag(paperIds: number[], tagId: number): Promise<
 // Comments
 export async function getComments(paperId: number): Promise<Comment[]> {
   return request(`/papers/${paperId}/comments`);
+}
+
+export async function getAllComments(): Promise<CommentWithPaper[]> {
+  return request('/papers/comments/all');
 }
 
 export async function addComment(
