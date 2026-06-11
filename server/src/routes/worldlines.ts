@@ -59,16 +59,30 @@ function invalidateSimilarityCache() {
 // POST /api/worldlines/similarity — compute similarity between browse papers and worldlines
 router.post('/similarity', async (req: Request, res: Response) => {
   try {
-    const { papers, threshold, category } = req.body;
+    const { papers, threshold, category, cohesionPercentile, selfMargin, margin, k } = req.body;
     if (!papers || !Array.isArray(papers)) {
       return res.status(400).json({ error: 'papers array is required' });
     }
-    // Default threshold for SPECTER is 0.82; clamp old TF-IDF thresholds
+    // Matching is per-thread cohesion-calibrated, narrowed by a self-margin + an
+    // exclusivity margin, and gated by required corroboration (similarity-core.ts).
+    // `threshold` no longer gates every thread; it is only the fallback bar for
+    // threads too small to have a cohesion (<2 members). Clamp stray low/old
+    // values to a sane cosine.
     let t = typeof threshold === 'number' ? threshold : 0.82;
     if (t < 0.60) t = 0.82;
+    // Tunable knobs (precision-first defaults; see SimilarityOptions). The old
+    // 0.5/median percentile + 0.02 margin admitted a flood of same-subtopic
+    // papers, so the defaults are stricter.
+    const percentile =
+      typeof cohesionPercentile === 'number' && cohesionPercentile > 0 && cohesionPercentile < 1
+        ? cohesionPercentile
+        : 0.75;
+    const selfMarginVal = typeof selfMargin === 'number' && selfMargin >= 0 ? selfMargin : 0.02;
+    const marginVal = typeof margin === 'number' && margin >= 0 ? margin : 0.02;
+    const kVal = Number.isInteger(k) && k >= 1 ? k : 3;
 
     // Check cache if category is provided
-    const cacheKey = category ? `${category}:${t}` : null;
+    const cacheKey = category ? `${category}:${t}:${percentile}:${selfMarginVal}:${marginVal}:${kVal}` : null;
     if (cacheKey) {
       const cached = similarityCache.get(cacheKey);
       if (cached && Date.now() < cached.expiresAt) {
@@ -82,7 +96,7 @@ router.post('/similarity', async (req: Request, res: Response) => {
         worldlineId: wl.id,
         worldlineName: wl.name,
         worldlineColor: wl.color,
-        papers: wl.papers.map(p => ({ arxiv_id: p.arxiv_id, title: p.title, summary: p.summary })),
+        papers: wl.papers.map(p => ({ arxiv_id: p.arxiv_id, title: p.title, summary: p.summary, authors: p.authors })),
       }));
 
     if (worldlineProfiles.length === 0) {
@@ -90,10 +104,26 @@ router.post('/similarity', async (req: Request, res: Response) => {
     }
 
     const results = await computeWorldlineSimilarity(
-      papers.map((p: any) => ({ id: p.id, title: p.title, summary: p.summary })),
+      papers.map((p: any) => ({ id: p.id, title: p.title, summary: p.summary, authors: Array.isArray(p.authors) ? p.authors : [] })),
       worldlineProfiles,
-      t
+      { fallbackThreshold: t, cohesionPercentile: percentile, selfMargin: selfMarginVal, margin: marginVal, k: kVal }
     );
+
+    // Record each flag for tuning/telemetry. Idempotent per (paper, worldline):
+    // re-computation won't duplicate rows or clear accept/reject decisions.
+    for (const r of results) {
+      for (const m of r.matches) {
+        db.logFlag({
+          arxiv_id: r.paperId,
+          worldline_id: m.worldlineId,
+          score: m.score,
+          runner_up_score: m.runnerUpScore ?? null,
+          margin: marginVal,
+          corroboration_kind: m.corroborationKind ?? 'terms',
+          category: category ?? null,
+        });
+      }
+    }
 
     // Cache results until next arXiv refresh
     if (cacheKey) {
@@ -107,6 +137,31 @@ router.post('/similarity', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Similarity scoring error:', error);
     res.status(500).json({ error: 'Failed to compute similarity' });
+  }
+});
+
+// POST /api/worldlines/flag/dismiss — reject a flagged (paper, worldline) suggestion
+router.post('/flag/dismiss', (req: Request, res: Response) => {
+  try {
+    const { arxiv_id, worldline_id } = req.body;
+    if (!arxiv_id || !worldline_id) {
+      return res.status(400).json({ error: 'arxiv_id and worldline_id are required' });
+    }
+    db.markFlagDismissed(String(arxiv_id), paramInt(worldline_id));
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Dismiss flag error:', error);
+    res.status(500).json({ error: 'Failed to dismiss flag' });
+  }
+});
+
+// GET /api/worldlines/flag-stats — diagnostic acceptance telemetry (overall + per category)
+router.get('/flag-stats', (_req: Request, res: Response) => {
+  try {
+    res.json(db.getFlagStats());
+  } catch (error) {
+    console.error('Flag stats error:', error);
+    res.status(500).json({ error: 'Failed to get flag stats' });
   }
 });
 
@@ -210,6 +265,7 @@ router.post('/batch-import', async (req: Request, res: Response) => {
       for (let i = 0; i < sortedPapers.length; i++) {
         try {
           db.addWorldlinePaper(wlId, sortedPapers[i].id, positionOffset + i);
+          db.markFlagAccepted(sortedPapers[i].arxiv_id, wlId);
         } catch {
           // paper may already be in worldline — ignore
         }
@@ -352,7 +408,11 @@ router.post('/:id/papers', (req: Request, res: Response) => {
     if (!paper_id) {
       return res.status(400).json({ error: 'paper_id is required' });
     }
-    db.addWorldlinePaper(paramInt(req.params.id), paper_id, position ?? 0);
+    const wlId = paramInt(req.params.id);
+    db.addWorldlinePaper(wlId, paper_id, position ?? 0);
+    // Assigning a paper to a worldline accepts any pending flag for that pair.
+    const paper = db.getPaper(paper_id) as { arxiv_id?: string } | undefined;
+    if (paper?.arxiv_id) db.markFlagAccepted(paper.arxiv_id, wlId);
     invalidateSimilarityCache();
     res.status(201).json({ success: true });
   } catch (error) {

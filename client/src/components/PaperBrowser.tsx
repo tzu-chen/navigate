@@ -36,6 +36,9 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
   const [similarityMap, setSimilarityMap] = useState<Map<string, WorldlineSimilarityMatch[]>>(new Map());
   const [scanningWorldlines, setScanningWorldlines] = useState(false);
   const similarityAbortRef = useRef<AbortController | null>(null);
+  // Flag accept/reject UI state, keyed `${paperId}:${worldlineId}`.
+  const [assigningFlags, setAssigningFlags] = useState<Set<string>>(new Set());
+  const [assignedFlags, setAssignedFlags] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<'new' | 'cross' | 'replace'>('new');
   const [showMobileSearch, setShowMobileSearch] = useState(false);
   const [arxivIdInput, setArxivIdInput] = useState('');
@@ -85,8 +88,11 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
 
     setScanningWorldlines(true);
     api.getSettings().then(settings => {
+      // Opt-in only: when disabled, make no request so the CPU-heavy embedding
+      // model is never invoked (or even loaded) while browsing.
+      if (!settings.similarityEnabled) return [];
       return api.checkWorldlineSimilarity(
-        papers.map(p => ({ id: p.id, title: p.title, summary: p.summary })),
+        papers.map(p => ({ id: p.id, title: p.title, summary: p.summary, authors: p.authors })),
         settings.similarityThreshold,
         selectedCategory
       );
@@ -225,6 +231,43 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
         return next;
       });
     }
+  }
+
+  // Accept a worldline suggestion: save the paper (if needed) and assign it to
+  // the suggested worldline. The server records the flag as accepted.
+  async function handleAssignToWorldline(paper: ArxivPaper, match: WorldlineSimilarityMatch) {
+    const key = `${paper.id}:${match.worldlineId}`;
+    if (assigningFlags.has(key) || assignedFlags.has(key)) return;
+    setAssigningFlags(prev => new Set(prev).add(key));
+    try {
+      const saved = await onSavePaper(paper); // syncs library state, returns SavedPaper
+      await api.addWorldlinePaper(match.worldlineId, saved.id, 0);
+      setAssignedFlags(prev => new Set(prev).add(key));
+    } catch (err) {
+      console.error('Assign to worldline failed:', err);
+    } finally {
+      setAssigningFlags(prev => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
+
+  // Reject a worldline suggestion: record it server-side and drop the badge.
+  async function handleDismissFlag(paper: ArxivPaper, match: WorldlineSimilarityMatch) {
+    try {
+      await api.dismissWorldlineFlag(paper.id, match.worldlineId);
+    } catch (err) {
+      console.error('Dismiss flag failed:', err);
+    }
+    setSimilarityMap(prev => {
+      const next = new Map(prev);
+      const remaining = (next.get(paper.id) || []).filter(m => m.worldlineId !== match.worldlineId);
+      if (remaining.length > 0) next.set(paper.id, remaining);
+      else next.delete(paper.id);
+      return next;
+    });
   }
 
   function toggleAbstract(id: string) {
@@ -513,26 +556,47 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
 
               {worldlineMatches && worldlineMatches.length > 0 && (
                 <div className="worldline-matches">
-                  {worldlineMatches.map(match => (
-                    <span
-                      key={match.worldlineId}
-                      className="worldline-match-badge"
-                      style={{
-                        borderColor: match.worldlineColor,
-                        color: match.worldlineColor,
-                      }}
-                      title={`Similarity score: ${match.score.toFixed(3)}`}
-                    >
-                      <span
-                        className="worldline-match-dot"
-                        style={{ background: match.worldlineColor }}
-                      />
-                      {match.worldlineName}
-                      <span className="worldline-match-score">
-                        {(match.score * 100).toFixed(0)}%
+                  {worldlineMatches.map(match => {
+                    const flagKey = `${paper.id}:${match.worldlineId}`;
+                    const isAssigning = assigningFlags.has(flagKey);
+                    const isAssigned = assignedFlags.has(flagKey);
+                    const why = match.corroborationKind === 'author'
+                      ? 'shared author'
+                      : match.corroborationKind === 'terms'
+                        ? 'shared distinctive terms'
+                        : '';
+                    return (
+                      <span key={match.worldlineId} className="worldline-match-badge-group">
+                        <button
+                          type="button"
+                          className="worldline-match-badge worldline-match-assign"
+                          style={{ borderColor: match.worldlineColor, color: match.worldlineColor }}
+                          title={isAssigned
+                            ? `Assigned to ${match.worldlineName}`
+                            : `Assign to ${match.worldlineName} (score ${match.score.toFixed(3)}${why ? `, ${why}` : ''})`}
+                          onClick={() => handleAssignToWorldline(paper, match)}
+                          disabled={isAssigning || isAssigned}
+                        >
+                          <span className="worldline-match-dot" style={{ background: match.worldlineColor }} />
+                          {match.worldlineName}
+                          <span className="worldline-match-score">
+                            {isAssigned ? '✓' : isAssigning ? '…' : `${(match.score * 100).toFixed(0)}%`}
+                          </span>
+                        </button>
+                        {!isAssigned && (
+                          <button
+                            type="button"
+                            className="worldline-match-dismiss"
+                            title="Dismiss this suggestion"
+                            onClick={() => handleDismissFlag(paper, match)}
+                            disabled={isAssigning}
+                          >
+                            ×
+                          </button>
+                        )}
                       </span>
-                    </span>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 

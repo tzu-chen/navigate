@@ -15,7 +15,7 @@ npm run build:server      # Build backend only (tsc)
 npm start                 # Start production server (serves API + built frontend from client/dist/)
 ```
 
-The Vite dev server proxies `/api` requests to `http://localhost:3001`. No `.env` files are used. Server environment variables: `PORT` (defaults to 3001) and `SUITE_DATA_ROOT` (optional, part of the suite data-centralization scheme). The Claude API key is stored client-side in localStorage.
+The Vite dev server proxies `/api` requests to `http://localhost:3001`. No `.env` files are used. Server environment variables: `PORT` (defaults to 3001), `SUITE_DATA_ROOT` (optional, part of the suite data-centralization scheme), and `SIMILARITY_NUM_THREADS` (optional, caps the SPECTER2 ONNX intra-op thread pool; defaults to 2 to keep CPU/fan in check). The Claude API key is stored client-side in localStorage.
 
 **`SUITE_DATA_ROOT` (data location).** The data directory is resolved in one place — `server/src/services/paths.ts` (imported by `database.ts` and `pdf.ts`). When `SUITE_DATA_ROOT` is set, data lives at `$SUITE_DATA_ROOT/navigate/` (`papers.db`, `pdfs/`, `pdf-cache/`); when unset, it falls back **byte-for-byte** to the legacy in-repo `server/data/`. Do not duplicate or "fix" this path — add new data under `DATA_DIR` from `paths.ts`.
 
@@ -85,53 +85,65 @@ paperpile-navigate/
   + `chat.ts` — Claude AI proxy. Fetches PDF (cached 30min in memory), sends to Anthropic API with paper context and related worldline papers. Model: `claude-sonnet-4-20250514`, max_tokens: 2048. Also handles worldline-level chat (no PDF, titles + abstracts only) and API key verification.
   + `authors.ts` — Favorite authors + batch-fetches recent publications (concurrency limit: 3)
   + `export.ts` — BibTeX and Paperpile JSON generation. Citation key format: `{LastName}{Year}{ArxivId}`. Embeds tags as keywords and comments as notes. Also streams a ZIP archive of selected local PDFs (`GET /api/export/pdfs?ids=`).
-  + `worldlines.ts` — Worldline CRUD, paper assignment with position ordering, SPECTER embedding similarity scoring (see Similarity System below), batch import from ArXiv
+  + `worldlines.ts` — Worldline CRUD, paper assignment with position ordering, embedding similarity scoring + flag log/dismiss/stats (see Similarity System below), batch import from ArXiv
   + `settings.ts` — Key-value settings CRUD (API key, similarity threshold, etc.)
 * **services/** — Business logic layer:
   + `database.ts` — SQLite with better-sqlite3. WAL mode, foreign keys enabled. 40+ query functions, all parameterized. Schema created/migrated in `initializeDatabase()`.
   + `arxiv.ts` — ArXiv REST API client (`http://export.arxiv.org/api/query`). XML parsing via xml2js. Functions for search, author search, single paper fetch, latest (RSS), and recent (HTML scraping).
   + `chat.ts` — Anthropic API integration with PDF base64 encoding and ephemeral prompt caching (`cache_control: { type: 'ephemeral' }`). Note: the Anthropic SDK is NOT a direct dependency — the server calls the Anthropic REST API via fetch, forwarding the API key from client-side settings.
   + `pdf.ts` — PDF storage management under `server/data/pdfs/`. Download, store, delete, path resolution. ArXiv IDs escaped (`/` → `_`) for filenames.
-  + `similarity.ts` — SPECTER-based semantic similarity (see Similarity System below).
+  + `similarity.ts` — embedding backends + similarity orchestration; `similarity-core.ts` holds the pure, unit-testable decision logic (see Similarity System below).
   + `paperpile.ts` — BibTeX/Paperpile export formatting with author name parsing.
 
 ### Similarity System
 
-**Status: migrating from TF-IDF to SPECTER embeddings.**
+**Precision-first embedding matching of browse papers to worldlines.** The goal is to flag only papers that *distinctively* belong to one thread, accepting missed recall over a daily spray of false positives. (History: this replaced an absolute-threshold centroid scorer, which itself replaced a TF-IDF cosine scorer — both over-fired. See `worldline-similarity-overhaul.md` for the full rationale.)
 
-The previous implementation in `similarity.ts` used custom TF-IDF cosine similarity (tokenize → remove stop words → compute TF-IDF → cosine similarity, title weighted 2x). This produced too many false positives because bag-of-words methods cannot distinguish semantic relevance from superficial keyword overlap.
+**Two files:**
 
-**New approach: SPECTER embeddings via `@huggingface/transformers`.**
+* `similarity-core.ts` — **pure, model-independent, dependency-free** decision logic (no DB, no model imports), so it is unit-verifiable in isolation: `cosineSimilarity`, `nearestMemberScore`, `worldlineCohesion`, `matchWorldlines`, `applyExclusivityMargin`, and the text/author `corroborate` (+ `tokenize`, `documentFrequencies`, `normalizeAuthor`).
+* `similarity.ts` — embedding backends + the orchestration that wires the core into the request flow and the SQLite caches.
 
-SPECTER (`allenai/specter`) is a SciBERT-based model trained on citation-linked scientific papers. It produces 768-dim embeddings that capture "this paper is related to that paper" semantics far better than keyword overlap. We use the ONNX variant via `@huggingface/transformers` (formerly `@xenova/transformers`) to keep everything in Node — no Python sidecar needed.
+**The pipeline, per browse paper, against every worldline:**
 
-**Key design decisions:**
+1. **Nearest-member score** — `s(p,W) = max over members m of cos(emb_p, emb_m)`. Not a centroid (a centroid of a multi-subtopic thread drifts toward the global mean and over-fires).
+2. **Per-thread cohesion gate + self-margin** — keep `W` only if `s(p,W) ≥ cohesion(W) + selfMargin`, where `cohesion(W)` is the `cohesionPercentile`-th (default **0.75**) percentile of each member's nearest-sibling cosine, and `selfMargin` (default **0.02**) requires the paper to be *more tightly bound to the thread than the thread is to itself*. Self-calibrating: tight threads demand tight matches. This replaces the old single global threshold; the `settings` threshold is now only the fallback bar for <2-member threads. **The self-margin is the gate that actually bites** in the common single-candidate case (a paper near exactly one thread), which the runner-up margin below cannot catch — with SPECTER2's high, clustered similarities, a plain median cohesion bar admits a flood of same-subtopic papers.
+3. **Exclusivity margin** — when a paper clears more than one thread, keep only the argmax and only if it beats the runner-up by ≥ `margin` (default 0.02). Result: **≤1 match per browse paper.**
+4. **Required corroboration** — the embedding match must be backed by one concrete overlap: a shared author with a thread member, **or** ≥ `k` (default **3**) shared *distinctive* terms (corpus document-frequency fraction ≤ `distinctiveDfMax`, default **0.15**; the generic-ML stopword set cannot count).
 
-* **Input format:** SPECTER expects title and abstract concatenated as a single string (`title + ' ' + abstract`). Do not encode them separately.
-* **Embedding cache:** Embeddings are stored in the `paper_embeddings` table in SQLite as JSON-serialized float arrays. Embeddings are computed lazily — on first similarity request for a paper that lacks a cached embedding — and then stored. Worldline embeddings are the mean of their constituent paper embeddings, recomputed when papers are added/removed.
-* **Similarity scoring:** Cosine similarity on SPECTER embeddings replaces the old TF-IDF cosine similarity. The similarity threshold setting in the `settings` table still applies but the scale is different — SPECTER cosine similarities tend to be higher and more clustered than TF-IDF, so the default threshold needs recalibration (expect useful range ~0.75–0.92 rather than the old ~0.1–0.5).
-* **Model loading:** The `@huggingface/transformers` pipeline is initialized once at server startup (or on first use) and cached in memory. First load downloads the ONNX model to a local cache directory. Subsequent loads are instant.
-* **Fallback:** If embedding computation fails (e.g., model download issue), log the error and fall back to the old TF-IDF implementation so the app remains functional.
+**Tuning knobs** (request params on `POST /api/worldlines/similarity`): `cohesionPercentile`, `selfMargin`, `margin`, `k`. The defaults are **precision-first/low-recall** by design — your worldlines are subtopics and you browse the same categories, so the embedding cannot separate "in this subtopic" from "belongs to this thread"; the strict gate keeps the flood out at the cost of recall. Tune from the flag log + `npm run diagnose --prefix server` (which prints per-thread cohesion, cross-thread leakage, and a tuning simulation over logged flags) rather than guessing. A genuinely better precision signal (citations) remains future work.
+
+**Opt-in (off by default).** Embedding similarity is **disabled by default** because it runs on CPU and re-embeds each newly-browsed category — left on, it pegs every core and spins the fan. The `similarityEnabled` setting (Settings → Worldline Similarity) gates it; when off, `PaperBrowser` makes no `/similarity` request, so the model is never even loaded. GPU acceleration is **not available** on this box: `onnxruntime-node`'s Linux build ships only CPU/CUDA/TensorRT providers (NVIDIA-only), and the machine's GPU is an AMD 7900XTX (would need a ROCm source build or a Python sidecar). The CPU cost is instead bounded by `SIMILARITY_NUM_THREADS` (default 2) capping the ONNX intra-op pool.
+
+**Embedding backend** (`similarity.ts`): primary is **SPECTER2-proximity** (`adamlabadorf/specter2-proximity-onnx`) — citation-trained scientific paper embeddings whose proximity adapter is baked into the ONNX graph — run via **`onnxruntime-node` on CPU (no Python, no GPU)**. Inputs `input_ids`+`attention_mask`, output a pooled 768-d vector we L2-normalize. The session is created with `intraOpNumThreads: SIMILARITY_NUM_THREADS` / `interOpNumThreads: 1` / `executionMode: 'sequential'`. The tokenizer comes from `benchoi93/specter2-base-onnx-web` via `@huggingface/transformers`. If SPECTER2 fails to load, it falls back to the **all-MiniLM** transformers.js pipeline; if even that fails, similarity returns no flags (never a weaker scorer).
+
+* **Input format:** title and abstract concatenated (`title + ' ' + abstract`).
+* **Model cache:** the ONNX files (~441MB) download lazily on first use into `DATA_DIR/model-cache/specter2-proximity/` (so they follow `SUITE_DATA_ROOT`). First use re-embeds existing members under the new version; subsequent loads are instant.
+* **Embedding cache + versioning:** vectors live in `paper_embeddings`, keyed by the **active backend's version string** (`specter2-proximity-v1` or `all-MiniLM-L6-v2`). This is critical: tagging by the producing backend means a fallback can never mix 768-d and 384-d vectors in the cache. Browse-paper embeddings are cached too (the same paper recurs across days/categories). Cohesion is recomputed per request from cached member embeddings (cheap); the route's result cache is invalidated on membership change.
+
+**Instrumentation (`flag_log` table):** every flag writes a row `(arxiv_id, worldline_id, score, runner_up_score, margin, corroboration_kind, category, flagged_at, accepted, decided_at)` via `logFlag` (idempotent — `INSERT OR IGNORE` on `UNIQUE(arxiv_id, worldline_id)`). Assigning a paper to a worldline marks the flag **accepted** (`markFlagAccepted`, hooked into `POST /:id/papers` and batch-import); the browse-view × dismisses it (`markFlagDismissed` → `POST /api/worldlines/flag/dismiss`, only-if-pending). `GET /api/worldlines/flag-stats` returns acceptance rate overall and per category (diagnostic, not a cap). Use this accept/reject history to fit `cohesionPercentile`/`δ`/`k`.
 
 **Schema addition:**
 
 ```sql
 CREATE TABLE IF NOT EXISTS paper_embeddings (
     arxiv_id TEXT PRIMARY KEY,
-    embedding TEXT NOT NULL,  -- JSON-serialized float array (768 dims)
+    embedding TEXT NOT NULL,  -- JSON-serialized float array (768-d SPECTER2 / 384-d MiniLM)
     model_version TEXT NOT NULL DEFAULT 'specter-v1',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_paper_embeddings_model ON paper_embeddings(model_version);
 ```
 
-The `model_version` column allows invalidating the cache if the model is swapped (e.g., upgrading to SPECTER2 or a different model). When `model_version` changes, stale embeddings should be recomputed.
+To swap models, change the backend's `version` string in `similarity.ts`; the version mismatch makes `getEmbeddings` recompute lazily under the new tag.
 
-**Dependencies added:** `@huggingface/transformers` (server-side only).
+**Verification:** `npm run verify:similarity --prefix server` runs the model-independent unit harness over `similarity-core.ts` (Phases 1–3, incl. an isolated temp-DB test of the flag log via `SUITE_DATA_ROOT`). `npm run verify:specter2 --prefix server` is the model gate — it loads the active backend and checks a related paper pair scores clearly above an unrelated one. Both live in `server/scripts/`.
+
+**Dependencies added:** `@huggingface/transformers` (tokenizer + MiniLM fallback) and `onnxruntime-node` (SPECTER2 ONNX inference), server-side only.
 
 ### Database Schema (`server/data/papers.db`)
 
-SQLite database created at runtime. 11 tables with cascade deletion:
+SQLite database created at runtime. 12 tables with cascade deletion:
 
 | Table | Key Columns | Constraints |
 | --- | --- | --- |
@@ -146,21 +158,22 @@ SQLite database created at runtime. 11 tables with cascade deletion:
 | `chat_messages` | id, session_id, role, content, token_usage, created_at | FK→chat_sessions CASCADE |
 | `settings` | key, value | key PRIMARY KEY (UNIQUE) |
 | `paper_embeddings` | arxiv_id, embedding, model_version, created_at | arxiv_id PRIMARY KEY |
+| `flag_log` | id, arxiv_id, worldline_id, score, runner_up_score, margin, corroboration_kind, category, flagged_at, accepted, decided_at | UNIQUE(arxiv_id, worldline_id), FK→worldlines CASCADE |
 
-Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `paper_tags.tag_id`, `worldline_papers.worldline_id`, `worldline_papers.paper_id`, `chat_sessions.arxiv_id`, `chat_sessions.worldline_id`, `chat_sessions.session_type`, `paper_embeddings.model_version`.
+Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `paper_tags.tag_id`, `worldline_papers.worldline_id`, `worldline_papers.paper_id`, `chat_sessions.arxiv_id`, `chat_sessions.worldline_id`, `chat_sessions.session_type`, `paper_embeddings.model_version`, `flag_log.worldline_id`, `flag_log.category`, `flag_log.accepted`.
 
 ### Storage Split
 
 **Important:** The project was originally client-side only, storing everything in localStorage. Most data has since been migrated server-side. Do not introduce new localStorage keys for persistent data — use the server-side settings or database instead.
 
-* **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines, chat sessions + messages, settings (Claude API key, similarity threshold), paper embeddings
+* **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines, chat sessions + messages, settings (Claude API key, similarity threshold), paper embeddings, worldline flag log
 * **Client-side (localStorage)**: Only visual preferences that affect rendering before API loads — color scheme and card font size (`paperpile-navigate-visual-prefs`)
 
 ## Key Dependencies
 
 **Frontend:** React 18.3, Vite 6, TypeScript 5.7, react-pdf 9.1, react-markdown 10.1, better-react-mathjax 2.4, d3 7.9
 
-**Backend:** Express 4.21, TypeScript 5.7, better-sqlite3 11.7, xml2js 0.6, cors 2.8, @huggingface/transformers (SPECTER ONNX inference), tsx 4.19 (dev)
+**Backend:** Express 4.21, TypeScript 5.7, better-sqlite3 11.7, xml2js 0.6, cors 2.8, @huggingface/transformers (tokenizer + all-MiniLM fallback), onnxruntime-node 1.21 (SPECTER2 ONNX inference), tsx 4.19 (dev)
 
 ## Conventions
 

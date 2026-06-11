@@ -111,6 +111,8 @@ export interface WorldlineSimilarityMatch {
   worldlineName: string;
   worldlineColor: string;
   score: number;
+  runnerUpScore?: number | null;
+  corroborationKind?: 'author' | 'terms';
 }
 
 export interface PaperSimilarityResult {

@@ -568,7 +568,7 @@ export async function getRelatedPaperArxivIds(arxivId: string): Promise<{ arxivI
 
 // Worldline Similarity
 export async function checkWorldlineSimilarity(
-  papers: { id: string; title: string; summary: string }[],
+  papers: { id: string; title: string; summary: string; authors: string[] }[],
   threshold: number,
   category?: string
 ): Promise<PaperSimilarityResult[]> {
@@ -577,6 +577,14 @@ export async function checkWorldlineSimilarity(
     body: JSON.stringify({ papers, threshold, category }),
   });
   return data.results;
+}
+
+// Reject a flagged (paper, worldline) suggestion from the browse view.
+export async function dismissWorldlineFlag(arxivId: string, worldlineId: number): Promise<void> {
+  await request('/worldlines/flag/dismiss', {
+    method: 'POST',
+    body: JSON.stringify({ arxiv_id: arxivId, worldline_id: worldlineId }),
+  });
 }
 
 // Settings
@@ -595,6 +603,7 @@ export interface AutoSwitchSettings {
 export interface AppSettings {
   claudeApiKey: string;
   colorScheme: string;
+  similarityEnabled: boolean;
   similarityThreshold: number;
   cardFontSize: number;
   favoriteCategories: string[];
@@ -614,6 +623,9 @@ const DEFAULT_AUTO_SWITCH: AutoSwitchSettings = {
 const DEFAULT_SETTINGS: AppSettings = {
   claudeApiKey: '',
   colorScheme: DEFAULT_SCHEME_ID,
+  // Off by default: embedding similarity is CPU-intensive (SPECTER2 on CPU) and
+  // precision-first/low-recall. Opt in from Settings → Worldline Similarity.
+  similarityEnabled: false,
   similarityThreshold: 0.82,
   cardFontSize: 1,
   favoriteCategories: [],
@@ -685,6 +697,7 @@ export async function getSettings(): Promise<AppSettings> {
     const serverSettings = await request<Record<string, string>>('/settings');
     return {
       claudeApiKey: serverSettings.claudeApiKey || '',
+      similarityEnabled: serverSettings.similarityEnabled === 'true',
       similarityThreshold: serverSettings.similarityThreshold
         ? parseFloat(serverSettings.similarityThreshold)
         : DEFAULT_SETTINGS.similarityThreshold,
@@ -708,6 +721,7 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
     method: 'PUT',
     body: JSON.stringify({
       claudeApiKey: settings.claudeApiKey,
+      similarityEnabled: String(settings.similarityEnabled),
       similarityThreshold: String(settings.similarityThreshold),
       favoriteCategories: settings.favoriteCategories.slice(0, MAX_FAVORITE_CATEGORIES).join(','),
     }),

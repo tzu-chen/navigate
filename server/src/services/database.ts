@@ -125,11 +125,30 @@ export function initializeDatabase(): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS flag_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      arxiv_id TEXT NOT NULL,
+      worldline_id INTEGER NOT NULL,
+      score REAL NOT NULL,
+      runner_up_score REAL,
+      margin REAL NOT NULL,
+      corroboration_kind TEXT NOT NULL,
+      category TEXT,
+      flagged_at TEXT NOT NULL DEFAULT (datetime('now')),
+      accepted INTEGER,
+      decided_at TEXT,
+      UNIQUE(arxiv_id, worldline_id),
+      FOREIGN KEY (worldline_id) REFERENCES worldlines(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_arxiv_id ON chat_sessions(arxiv_id);
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_worldline_id ON chat_sessions(worldline_id);
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_type ON chat_sessions(session_type);
     CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
     CREATE INDEX IF NOT EXISTS idx_paper_embeddings_model ON paper_embeddings(model_version);
+    CREATE INDEX IF NOT EXISTS idx_flag_log_worldline ON flag_log(worldline_id);
+    CREATE INDEX IF NOT EXISTS idx_flag_log_category ON flag_log(category);
+    CREATE INDEX IF NOT EXISTS idx_flag_log_accepted ON flag_log(accepted);
   `);
 
   // Migration: add pdf_path column if it doesn't exist
@@ -378,12 +397,14 @@ export function removeWorldlinePaper(worldlineId: number, paperId: number) {
   ).run(worldlineId, paperId);
 }
 
-// Get all worldlines with their papers' titles and summaries (for similarity scoring)
+// Get all worldlines with their papers' titles, summaries, and authors
+// (for similarity scoring + corroboration). `authors` is stored as a JSON
+// string in the papers table and parsed to an array here.
 export function getAllWorldlinesWithPapers(): {
   id: number;
   name: string;
   color: string;
-  papers: { arxiv_id: string; title: string; summary: string }[];
+  papers: { arxiv_id: string; title: string; summary: string; authors: string[] }[];
 }[] {
   const worldlines = db.prepare('SELECT id, name, color FROM worldlines ORDER BY id').all() as {
     id: number;
@@ -392,15 +413,31 @@ export function getAllWorldlinesWithPapers(): {
   }[];
 
   const paperStmt = db.prepare(`
-    SELECT p.arxiv_id, p.title, p.summary FROM papers p
+    SELECT p.arxiv_id, p.title, p.summary, p.authors FROM papers p
     JOIN worldline_papers wp ON p.id = wp.paper_id
     WHERE wp.worldline_id = ?
   `);
 
   return worldlines.map(wl => ({
     ...wl,
-    papers: paperStmt.all(wl.id) as { arxiv_id: string; title: string; summary: string }[],
+    papers: (paperStmt.all(wl.id) as { arxiv_id: string; title: string; summary: string; authors: string }[]).map(p => ({
+      arxiv_id: p.arxiv_id,
+      title: p.title,
+      summary: p.summary,
+      authors: parseAuthors(p.authors),
+    })),
   }));
+}
+
+// Authors are stored as a JSON array string; tolerate malformed/empty values.
+function parseAuthors(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((a): a is string => typeof a === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 // Get arxiv_ids of papers that share a worldline with the given paper
@@ -473,6 +510,80 @@ export function saveEmbedding(arxivId: string, embedding: string, modelVersion: 
 
 export function deleteEmbeddingsByModelVersion(modelVersion: string): void {
   db.prepare('DELETE FROM paper_embeddings WHERE model_version = ?').run(modelVersion);
+}
+
+// Flag log operations (worldline-similarity instrumentation)
+// One row per (browse paper, worldline) flag. `accepted` is NULL until the user
+// assigns the paper to the worldline (1) or dismisses the flag (0).
+export function logFlag(f: {
+  arxiv_id: string;
+  worldline_id: number;
+  score: number;
+  runner_up_score: number | null;
+  margin: number;
+  corroboration_kind: string;
+  category: string | null;
+}) {
+  // INSERT OR IGNORE: re-computing similarity must not duplicate a flag or clear
+  // an existing accept/reject decision.
+  return db.prepare(`
+    INSERT OR IGNORE INTO flag_log
+      (arxiv_id, worldline_id, score, runner_up_score, margin, corroboration_kind, category)
+    VALUES (@arxiv_id, @worldline_id, @score, @runner_up_score, @margin, @corroboration_kind, @category)
+  `).run(f);
+}
+
+// Assigning a paper to a worldline is a strong positive signal; it wins over any
+// prior pending/dismissed state.
+export function markFlagAccepted(arxivId: string, worldlineId: number) {
+  return db.prepare(
+    "UPDATE flag_log SET accepted = 1, decided_at = datetime('now') WHERE arxiv_id = ? AND worldline_id = ?"
+  ).run(arxivId, worldlineId);
+}
+
+// Dismiss applies only to a still-pending flag; it never overrides an accept.
+export function markFlagDismissed(arxivId: string, worldlineId: number) {
+  return db.prepare(
+    "UPDATE flag_log SET accepted = 0, decided_at = datetime('now') WHERE arxiv_id = ? AND worldline_id = ? AND accepted IS NULL"
+  ).run(arxivId, worldlineId);
+}
+
+export interface FlagStatsRow {
+  category: string | null;
+  total: number;
+  accepted: number;
+  rejected: number;
+  pending: number;
+  acceptance_rate: number | null; // accepted / (accepted + rejected), null if none decided
+}
+
+function toStatsRow(r: { category: string | null; total: number; accepted: number; rejected: number; pending: number }): FlagStatsRow {
+  const decided = r.accepted + r.rejected;
+  return { ...r, acceptance_rate: decided > 0 ? r.accepted / decided : null };
+}
+
+// Diagnostic telemetry: acceptance rate overall and per category (the unit I
+// context-switch on while browsing). Not a cap — just visibility.
+export function getFlagStats(): { overall: FlagStatsRow; byCategory: FlagStatsRow[] } {
+  // COUNT(CASE ... END) (not SUM) so an empty table / group yields 0, not NULL.
+  const agg = `
+    COUNT(*) AS total,
+    COUNT(CASE WHEN accepted = 1 THEN 1 END) AS accepted,
+    COUNT(CASE WHEN accepted = 0 THEN 1 END) AS rejected,
+    COUNT(CASE WHEN accepted IS NULL THEN 1 END) AS pending
+  `;
+  const overall = db.prepare(`SELECT NULL AS category, ${agg} FROM flag_log`).get() as any;
+  const byCategory = db.prepare(
+    `SELECT category, ${agg} FROM flag_log GROUP BY category ORDER BY total DESC`
+  ).all() as any[];
+  return {
+    overall: toStatsRow(overall),
+    byCategory: byCategory.map(toStatsRow),
+  };
+}
+
+export function getFlags(limit = 500) {
+  return db.prepare('SELECT * FROM flag_log ORDER BY flagged_at DESC, id DESC LIMIT ?').all(limit);
 }
 
 // PDF path operations

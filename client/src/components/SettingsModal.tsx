@@ -90,6 +90,7 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
   const [apiKey, setApiKey] = useState('');
   const [colorScheme, setColorScheme] = useState(DEFAULT_SCHEME_ID);
   const [autoSwitch, setAutoSwitch] = useState<AutoSwitchSettings>(DEFAULT_AUTO_SWITCH);
+  const [similarityEnabled, setSimilarityEnabled] = useState(false);
   const [similarityThreshold, setSimilarityThreshold] = useState(0.82);
   const [cardFontSize, setCardFontSize] = useState<number>(1);
   const [favoriteCategories, setFavoriteCategories] = useState<string[]>([]);
@@ -113,6 +114,7 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
         setApiKey(settings.claudeApiKey);
         setColorScheme(settings.colorScheme);
         setAutoSwitch(settings.autoSwitch);
+        setSimilarityEnabled(settings.similarityEnabled);
         setSimilarityThreshold(settings.similarityThreshold);
         setCardFontSize(settings.cardFontSize);
         setFavoriteCategories(settings.favoriteCategories);
@@ -173,6 +175,7 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
       await api.saveSettings({
         claudeApiKey: apiKey.trim(),
         colorScheme,
+        similarityEnabled,
         similarityThreshold,
         cardFontSize,
         favoriteCategories,
@@ -233,6 +236,7 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
       await api.saveSettings({
         claudeApiKey: '',
         colorScheme,
+        similarityEnabled,
         similarityThreshold,
         cardFontSize,
         favoriteCategories,
@@ -455,12 +459,23 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
             <div className="settings-section" style={{ marginTop: 24 }}>
               <h3>Worldline Similarity</h3>
               <p className="settings-description">
-                When browsing ArXiv, papers are scored against your existing worldlines using semantic similarity (SPECTER embeddings).
-                Adjust the threshold to control how sensitive the matching is.
-                Lower values show more matches, higher values require closer relevance.
+                When browsing ArXiv, papers can be scored against your existing worldlines using SPECTER2
+                embeddings. This runs on the CPU and re-embeds each new category of papers, so it is
+                <strong> off by default</strong>. Enable it only if you want live worldline suggestions while browsing.
               </p>
 
               <div className="settings-field">
+                <label className="settings-checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={similarityEnabled}
+                    onChange={e => setSimilarityEnabled(e.target.checked)}
+                  />
+                  <span>Enable similarity matching while browsing (CPU-intensive)</span>
+                </label>
+              </div>
+
+              <div className="settings-field" style={{ opacity: similarityEnabled ? 1 : 0.5 }}>
                 <label>Similarity Threshold: {similarityThreshold.toFixed(2)}</label>
                 <div className="settings-threshold-row">
                   <span className="settings-threshold-label">0.70</span>
@@ -470,6 +485,7 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
                     max="0.95"
                     step="0.01"
                     value={similarityThreshold}
+                    disabled={!similarityEnabled}
                     onChange={e => setSimilarityThreshold(parseFloat(e.target.value))}
                     className="settings-threshold-slider"
                   />
@@ -477,6 +493,7 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
                 </div>
                 <p className="settings-hint">
                   Default: 0.82. Lower = more matches (less strict), Higher = fewer matches (more strict).
+                  Only the fallback bar for small (&lt;2 member) threads; larger threads self-calibrate.
                 </p>
               </div>
             </div>
