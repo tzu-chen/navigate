@@ -14,7 +14,8 @@ import settingsRoutes from './routes/settings';
 import scribeRoutes from './routes/scribe';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = parseInt(process.env.PORT || '3001', 10);
+const HOST = process.env.HOST || '127.0.0.1';
 
 // Middleware
 app.use(cors());
@@ -43,8 +44,8 @@ initializeDatabase();
 initializePdfStorage();
 console.log('Database initialized');
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
 });
 
 export default app;
