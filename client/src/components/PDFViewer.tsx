@@ -69,6 +69,13 @@ const MAX_CANVAS_PIXEL_RATIO = 3;
 // PDF in their OS's native viewer instead.
 const MOBILE_PDF_SIZE_LIMIT = 12 * 1024 * 1024;
 
+// Pages kept live on each side of the viewport, as a *page count* — not a
+// pixel distance. A distance-based buffer degenerates when page wrappers have
+// no height yet (they all stack at the same y and every one falls inside the
+// window), which is how opening a paper used to mount a canvas for every page
+// in the document at once. A count cannot degenerate that way.
+const BUFFER = isMobile ? 1 : 2;
+
 // PDF.js's text layer is one <span> per text item, so a Range across multiple
 // lines emits many client rects that often stack on the same visual line.
 // Group rects whose vertical centers are within half a line height of each
@@ -128,7 +135,16 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
   const [pdfThemeOverride, setPdfThemeOverride] = useState(() => {
     return localStorage.getItem('pdfDarkTheme') !== null;
   });
-  const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set([1]));
+  // Window of pages holding a live <Page> canvas, as an inclusive range.
+  // Deliberately a range and not a Set: a range around the observed pages is
+  // structurally incapable of covering the whole document, so a bad layout
+  // measurement can widen it by a page or two but never by hundreds.
+  const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>({
+    start: 1,
+    end: 1 + BUFFER * 2,
+  });
+  const visibleRangeRef = useRef(visibleRange);
+  visibleRangeRef.current = visibleRange;
   // Tooltip pinning: a click on any highlight of a comment pins that
   // comment's tooltip open; clicking again unpins. Hover still works.
   const [pinnedCommentId, setPinnedCommentId] = useState<number | null>(null);
@@ -173,12 +189,17 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     }
   }, [onPageChange]);
 
-  // Reset state when PDF changes
+  // Reset state when PDF changes. numPages is cleared along with the page
+  // dimensions: leaving the previous document's count in place would mount
+  // that many wrappers against dimensions of 0 while the new document loads.
   useEffect(() => {
     hasInitialScale.current = false;
     pageWidthRef.current = 0;
     pageHeightRef.current = 0;
-    setVisiblePages(new Set([1]));
+    pdfDocRef.current = null;
+    setNumPages(0);
+    setOutline([]);
+    setVisibleRange({ start: 1, end: 1 + BUFFER * 2 });
     jumpHistoryRef.current = [];
     jumpIndexRef.current = -1;
     setSizeGate(isMobile ? 'pending' : 'ok');
@@ -273,83 +294,135 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     return () => observer.disconnect();
   }, [pdfThemeOverride]);
 
-  // Track current page via scroll position and update visible pages for virtualization
+  // Derive the live-page window from an IntersectionObserver rather than from
+  // hand-rolled rect math in a scroll handler. Two properties keep it bounded:
+  // the window is a range around the pages the browser reports as intersecting,
+  // and an empty report leaves the previous range alone instead of recomputing
+  // from a container that is hidden or mid-relayout.
   useEffect(() => {
     const container = containerRef.current;
     if (!container || numPages === 0) return;
 
-    const BUFFER = isMobile ? 1 : 3; // fewer buffered pages on mobile to save memory
+    const intersecting = new Set<number>();
+    let rafId: number | null = null;
+    let pending: IntersectionObserverEntry[] = [];
 
-    const updateVisibility = () => {
-      const pages = container.querySelectorAll('[data-page-number]');
-      if (pages.length === 0) return;
-
-      const containerTop = container.getBoundingClientRect().top;
-      const containerBottom = containerTop + container.clientHeight;
-      let visiblePage = 1;
-      const newVisible = new Set<number>();
-
-      for (const page of pages) {
-        const rect = page.getBoundingClientRect();
-        if (rect.top <= containerTop + 50) {
-          const pageNum = Number(page.getAttribute('data-page-number'));
-          if (!isNaN(pageNum)) {
-            visiblePage = pageNum;
-          }
-        }
-        // Check if page is in or near the viewport
-        const pageNum = Number(page.getAttribute('data-page-number'));
-        if (!isNaN(pageNum) && rect.bottom >= containerTop - container.clientHeight * BUFFER && rect.top <= containerBottom + container.clientHeight * BUFFER) {
-          newVisible.add(pageNum);
-        }
+    const flush = () => {
+      rafId = null;
+      for (const entry of pending) {
+        const pageNum = Number((entry.target as HTMLElement).dataset.pageNumber);
+        if (isNaN(pageNum)) continue;
+        if (entry.isIntersecting) intersecting.add(pageNum);
+        else intersecting.delete(pageNum);
       }
-
-      // Always include a buffer around current page as fallback
-      for (let i = Math.max(1, visiblePage - BUFFER); i <= Math.min(numPages, visiblePage + BUFFER); i++) {
-        newVisible.add(i);
-      }
-
-      updateCurrentPage(visiblePage);
-      setVisiblePages(prev => {
-        // Avoid unnecessary re-renders by checking if the set actually changed
-        if (prev.size === newVisible.size && [...newVisible].every(p => prev.has(p))) return prev;
-        return newVisible;
-      });
+      pending = [];
+      if (intersecting.size === 0) return;
+      const sorted = Array.from(intersecting).sort((a, b) => a - b);
+      const start = Math.max(1, sorted[0] - BUFFER);
+      const end = Math.min(numPages, sorted[sorted.length - 1] + BUFFER);
+      setVisibleRange(prev => (prev.start === start && prev.end === end ? prev : { start, end }));
     };
 
-    // Initial visibility calculation
-    updateVisibility();
+    const observer = new IntersectionObserver(
+      entries => {
+        // Coalesce bursts within a frame so a momentum scroll produces one
+        // state commit instead of one per page boundary crossed.
+        pending.push(...entries);
+        if (rafId === null) rafId = requestAnimationFrame(flush);
+      },
+      // threshold + rootMargin give hysteresis, so pages don't flap in and out
+      // of the window when a fast scroll grazes their edges.
+      { root: container, threshold: 0.1, rootMargin: '100px 0px' },
+    );
 
-    container.addEventListener('scroll', updateVisibility, { passive: true });
-    return () => container.removeEventListener('scroll', updateVisibility);
+    container.querySelectorAll('[data-page-number]').forEach(el => observer.observe(el));
+
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      observer.disconnect();
+    };
+    // `scale` is deliberately excluded: IntersectionObserver recalculates by
+    // itself when observed elements resize, so rebuilding it on every zoom
+    // step would only cost a redundant burst of entries.
+  }, [numPages]);
+
+  // Current-page tracking, kept separate from the window above. Two adjacent
+  // pages can both remain intersecting while the reading position moves from
+  // one to the other — no observer entry fires, but the page number still has
+  // to advance. Only wrappers inside the current window are measured, so this
+  // is a handful of rect reads per frame rather than one per page.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || numPages === 0) return;
+
+    let rafId: number | null = null;
+
+    const measure = () => {
+      rafId = null;
+      const containerTop = container.getBoundingClientRect().top;
+      const { start, end } = visibleRangeRef.current;
+      let current = start;
+      for (let p = start; p <= end; p++) {
+        const el = container.querySelector(`[data-page-number="${p}"]`);
+        if (!el) continue;
+        if (el.getBoundingClientRect().top <= containerTop + 50) current = p;
+      }
+      updateCurrentPage(current);
+    };
+
+    const onScroll = () => {
+      if (rafId === null) rafId = requestAnimationFrame(measure);
+    };
+
+    measure();
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      container.removeEventListener('scroll', onScroll);
+    };
   }, [numPages, updateCurrentPage]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function onDocumentLoadSuccess(pdf: any) {
-    setNumPages(pdf.numPages);
+  async function onDocumentLoadSuccess(pdf: any) {
     pdfDocRef.current = pdf;
     setError(false);
 
-    // Calculate fit-to-width scale from the first page
+    // Resolve page-1 dimensions BEFORE publishing numPages. Wrappers size their
+    // placeholders from these refs, so publishing the count first would mount
+    // every wrapper at zero height for a frame — they would all stack at the
+    // same y, all report as intersecting, and the window would open to the
+    // whole document. Awaiting here costs one worker round-trip and makes the
+    // very first render of the page list correctly sized.
     if (!hasInitialScale.current) {
       hasInitialScale.current = true;
-      pdf.getPage(1).then((page: { getViewport: (opts: { scale: number }) => { width: number; height: number } }) => {
-        const container = containerRef.current;
-        if (!container) return;
+      try {
+        const page = await pdf.getPage(1);
         const viewport = page.getViewport({ scale: 1 });
-        // Account for padding/scrollbar in the container
-        const containerWidth = container.clientWidth - 20;
         pageWidthRef.current = viewport.width;
         pageHeightRef.current = viewport.height;
-        lastContainerWidthRef.current = container.clientWidth;
-        if (viewport.width > 0 && containerWidth > 0) {
-          const fitScale = containerWidth / viewport.width;
-          setScale(fitScale);
+        const container = containerRef.current;
+        if (container) {
+          // Account for padding/scrollbar in the container
+          const containerWidth = container.clientWidth - 20;
+          lastContainerWidthRef.current = container.clientWidth;
+          if (viewport.width > 0 && containerWidth > 0) {
+            setScale(containerWidth / viewport.width);
+          }
         }
-      }).catch(() => {
+      } catch {
         // Keep default scale on error
-      });
+      }
     }
+
+    // Last-resort dimensions (US Letter). Placeholders must never be zero-height
+    // — that is the condition the whole window design depends on ruling out.
+    if (pageHeightRef.current <= 0) {
+      pageWidthRef.current = 612;
+      pageHeightRef.current = 792;
+    }
+
+    setNumPages(pdf.numPages);
+    setVisibleRange({ start: 1, end: Math.min(pdf.numPages, 1 + BUFFER * 2) });
 
     pdf.getOutline().then((items: OutlineItem[] | null) => {
       if (items && items.length > 0) {
@@ -915,7 +988,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
           >
             {Array.from({ length: numPages }, (_, i) => {
               const pageNum = i + 1;
-              const isVisible = visiblePages.has(pageNum);
+              const isVisible = pageNum >= visibleRange.start && pageNum <= visibleRange.end;
               const pageAnnotations = annotationsByPage.get(pageNum);
               const pageW = pageWidthRef.current > 0 ? pageWidthRef.current * scale : 0;
               const pageH = pageHeightRef.current > 0 ? pageHeightRef.current * scale : 0;
