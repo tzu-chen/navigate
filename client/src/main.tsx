@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { MathJaxContext } from 'better-react-mathjax';
 import App from './App';
 import { KeybindingsProvider } from './contexts/KeybindingsContext';
+import './styles/monolith-theme.css';
 import './styles/main.css';
 
 const mathJaxConfig = {

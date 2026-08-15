@@ -176,7 +176,7 @@ export default function Comments({ savedPapers, onOpenPaper, showNotification }:
                 <div className="paper-meta">
                   <span className="paper-authors">{formatAuthors(c.authors)}</span>
                   {c.page_number != null && (
-                    <span className="status-badge" style={{ backgroundColor: '#6366f1' }}>
+                    <span className="status-badge" style={{ backgroundColor: 'var(--accent)' }}>
                       p.{c.page_number}
                     </span>
                   )}

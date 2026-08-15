@@ -4,6 +4,7 @@ import * as api from '../services/api';
 import LaTeX from './LaTeX';
 import ImportPanel from './ImportPanel';
 import AssignPopup from './AssignPopup';
+import { randomCategorical } from '../palette';
 
 interface Props {
   papers: SavedPaper[];
@@ -14,16 +15,6 @@ interface Props {
   favoriteAuthorNames: Set<string>;
   onFavoriteAuthor: (name: string) => void;
   onSearchAuthor: (name: string) => void;
-}
-
-const TAG_COLOR_PALETTE = [
-  '#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6',
-  '#8b5cf6', '#ef4444', '#14b8a6', '#f97316', '#84cc16',
-  '#06b6d4', '#a855f7', '#facc15', '#f43f5e', '#22c55e',
-];
-
-function randomTagColor(): string {
-  return TAG_COLOR_PALETTE[Math.floor(Math.random() * TAG_COLOR_PALETTE.length)];
 }
 
 const TIER_LABELS: Record<number, string> = {
@@ -371,7 +362,7 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
       return;
     }
     try {
-      await api.createTag(trimmed, randomTagColor());
+      await api.createTag(trimmed, randomCategorical());
       setNewTagName('');
       setCreatingTag(false);
       showNotification(`Tag "${trimmed}" created`);
@@ -384,7 +375,7 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
   async function handleShuffleTagColors() {
     if (tags.length === 0) return;
     try {
-      await Promise.all(tags.map(t => api.updateTag(t.id, t.name, randomTagColor())));
+      await Promise.all(tags.map(t => api.updateTag(t.id, t.name, randomCategorical())));
       showNotification('Tag colors shuffled');
       await onRefresh();
     } catch {

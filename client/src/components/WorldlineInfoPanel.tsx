@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Worldline } from '../types';
 import * as api from '../services/api';
+import { DEFAULT_ENTITY_COLOR } from '../palette';
 
 interface Props {
   paperId: number;
@@ -11,7 +12,7 @@ export default function WorldlineInfoPanel({ paperId, showNotification }: Props)
   const [allWorldlines, setAllWorldlines] = useState<Worldline[]>([]);
   const [paperWorldlineIds, setPaperWorldlineIds] = useState<Set<number>>(new Set());
   const [newName, setNewName] = useState('');
-  const [newColor, setNewColor] = useState('#6366f1');
+  const [newColor, setNewColor] = useState(DEFAULT_ENTITY_COLOR);
   const [loading, setLoading] = useState(true);
 
   async function loadData() {

@@ -319,29 +319,29 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
                     <div className="scheme-preview">
                       <div
                         className="scheme-swatch-bg"
-                        style={{ background: scheme.colors.bgPrimary }}
+                        style={{ background: scheme.swatch.bgPrimary }}
                       >
                         <div
                           className="scheme-swatch-bar"
-                          style={{ background: scheme.colors.bgSecondary, borderBottom: `2px solid ${scheme.colors.borderColor}` }}
+                          style={{ background: scheme.swatch.bgSecondary, borderBottom: `2px solid ${scheme.swatch.borderColor}` }}
                         />
                         <div className="scheme-swatch-body">
                           <div
                             className="scheme-swatch-card"
-                            style={{ background: scheme.colors.bgCard, border: `1px solid ${scheme.colors.borderColor}` }}
+                            style={{ background: scheme.swatch.bgCard, border: `1px solid ${scheme.swatch.borderColor}` }}
                           >
                             <div
                               className="scheme-swatch-text"
-                              style={{ background: scheme.colors.textPrimary }}
+                              style={{ background: scheme.swatch.textPrimary }}
                             />
                             <div
                               className="scheme-swatch-text short"
-                              style={{ background: scheme.colors.textSecondary }}
+                              style={{ background: scheme.swatch.textSecondary }}
                             />
                           </div>
                           <div
                             className="scheme-swatch-accent"
-                            style={{ background: scheme.colors.accent }}
+                            style={{ background: scheme.swatch.accent }}
                           />
                         </div>
                       </div>

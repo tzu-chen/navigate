@@ -5,6 +5,7 @@ import { SavedPaper, Worldline, ChatMessage, WorldlineChatSession } from '../typ
 import * as api from '../services/api';
 import LaTeX from './LaTeX';
 import Icon from './Icon';
+import { DEFAULT_ENTITY_COLOR } from '../palette';
 
 interface Props {
   papers: SavedPaper[];
@@ -33,7 +34,7 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
 
   // Worldline creation form
   const [newWlName, setNewWlName] = useState('');
-  const [newWlColor, setNewWlColor] = useState('#6366f1');
+  const [newWlColor, setNewWlColor] = useState(DEFAULT_ENTITY_COLOR);
 
   // Sidebar collapse — default closed on mobile
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 768);
@@ -910,7 +911,7 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
                       <button
                         key={wl.id}
                         className="btn btn-sm"
-                        style={{ background: wl.color, color: '#fff' }}
+                        style={{ background: wl.color, color: 'var(--mono-on-dark)' }}
                         onClick={() => handleAddPapersToWorldline(wl.id)}
                         title={`Add selected papers to "${wl.name}"`}
                       >

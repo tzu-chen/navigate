@@ -1,0 +1,341 @@
+/* ============================================================================
+ * Monolith theme — the shared suite palette (scribe · navigate · pyramid ·
+ * granary · monolith). Two themes: "Parchment" (light, default) and
+ * "Graphite" (dark).
+ *
+ * Source: design_handoff_monolith_latex_editor/THEME_ADOPTION.md.
+ *
+ * This is the ONE place colour is defined for this app. It declares the
+ * canonical `--mono-*` tokens for both themes, then aliases navigate's existing
+ * `--color-*` names onto them, so component CSS keeps the variable names it
+ * already uses. `src/colorSchemes.ts` only flips the `data-theme` attribute —
+ * it no longer writes colours as inline styles, so there is no second source
+ * that can silently outrank this file.
+ *
+ * Divergence from THEME_ADOPTION.md: the doc proposes `data-theme="parchment"`
+ * / `"graphite"`. We key on `data-theme="light"` / `"dark"` and carry the
+ * scheme id on `data-scheme`, matching monolith's own applyColorScheme(). That
+ * keeps every existing `[data-theme="dark"]` selector (and the pre-paint script
+ * in index.html) working unchanged. `data-theme-type` is still written too, for
+ * anything outside this repo that keys off it.
+ *
+ * Design rules that come with this palette — the palette is low-contrast by
+ * design and only holds up if structure is carried by lines, not fills:
+ *   · 1px borders and hairline dividers do the work. Solid fills appear only on
+ *     paper surfaces and small status dots.
+ *   · Active state = a 2px accent edge (left on list rows, bottom on tabs) plus
+ *     `--mono-accent-wash` — never a solid accent fill.
+ *   · Buttons are 1px outlined; hover steps the border to `--mono-line-strong`
+ *     and the text to `--mono-text`. Nothing gains a fill on hover.
+ *   · Badges are 1px outlined in the semantic colour, `-wash` background only
+ *     where the badge must survive on a busy row.
+ *
+ * Add a token here (in BOTH theme blocks) rather than introducing a literal in
+ * a component file.
+ * ==========================================================================*/
+
+/* ------------------------------------------------------- canonical: parchment */
+
+:root,
+[data-theme="light"] {
+  /* surfaces — 4 depths, chrome sits between editor and sunken */
+  --mono-surface-editor:     #ffffff;  /* code/text input surface             */
+  --mono-surface-paper:      #fffef9;  /* rendered document, popovers, cards  */
+  --mono-surface-chrome:     #faf8f4;  /* rails, panels, toolbars, statusbars */
+  --mono-surface-sunken:     #f3f0ea;  /* area behind a page/canvas           */
+
+  /* lines — structure is carried by borders, not fills */
+  --mono-line:               #e2ddd3;
+  --mono-line-strong:        #cdc6b8;
+  --mono-line-faint:         #f0ece4;
+
+  /* text — `faint` (2.8:1) and `disabled` (1.6:1) are deliberately below the
+   * 4.5:1 body threshold. They are for de-emphasized metadata and dead
+   * controls; never set running text in them. */
+  --mono-text:               #2c2820;
+  --mono-text-muted:         #6b6358;
+  --mono-text-faint:         #9e9588;
+  --mono-text-disabled:      #cdc6b8;
+  --mono-text-on-accent:     #fffef9;
+
+  /* accent */
+  --mono-accent:             #8b5e3c;
+  --mono-accent-hover:       #b07d56;
+  --mono-accent-wash:        rgba(139, 94, 60, 0.05);
+  --mono-accent-wash-strong: rgba(139, 94, 60, 0.07);
+
+  /* semantic */
+  --mono-error:              #b04a4a;
+  --mono-error-hover:        #c25a5a;
+  --mono-warning:            #b07830;
+  --mono-success:            #4a8c5e;
+  --mono-success-hover:      #5a9e6e;
+  --mono-info:               #3d6b8e;
+  --mono-error-wash:         rgba(176, 74, 74, 0.08);
+  --mono-warning-wash:       rgba(176, 120, 48, 0.10);
+  --mono-success-wash:       rgba(74, 140, 94, 0.10);
+  --mono-info-wash:          rgba(61, 107, 142, 0.10);
+
+  /* categorical — tags, kinds, plot series. Same perceived weight, so no
+   * series dominates. Use these instead of raw hexes. */
+  --mono-cat-1:              #8b5e3c;  /* brown   */
+  --mono-cat-2:              #3d6b8e;  /* blue    */
+  --mono-cat-3:              #7a5a99;  /* violet  */
+  --mono-cat-4:              #3d8080;  /* teal    */
+  --mono-cat-5:              #b07830;  /* amber   */
+  --mono-cat-6:              #b04a4a;  /* red     */
+  --mono-cat-7:              #6b6358;  /* neutral */
+  /* Same-weight extensions, for the places that need more than seven slots
+   * (arXiv category ribbons, tag pickers, per-series charts). Not part of the
+   * handoff's canonical seven — reach for 1–7 first. */
+  --mono-cat-8:              #6f7a3d;  /* olive   */
+  --mono-cat-9:              #a4517a;  /* rose    */
+  --mono-cat-10:             #4f5a99;  /* indigo  */
+  --mono-cat-11:             #3d8060;  /* sea     */
+  --mono-cat-12:             #a06a45;  /* clay    */
+  --mono-cat-13:             #4a5a6b;  /* slate   */
+  --mono-cat-14:             #6b4a7a;  /* plum    */
+  --mono-cat-15:             #5a7a4a;  /* moss    */
+
+  /* code syntax */
+  --mono-syn-keyword:        #7a5a99;
+  --mono-syn-type:           #3d8080;
+  --mono-syn-string:         #3d6b8e;
+  --mono-syn-comment:        #9e9588;
+  --mono-syn-number:         #b07830;
+  --mono-syn-user:           #8b5e3c;
+  --mono-syn-invalid:        #b04a4a;
+
+  /* document surface — real paper stays light in both themes */
+  --mono-doc-bg:             #fffef9;
+  --mono-doc-text:           #2c2820;
+  --mono-doc-muted:          #3f3a30;
+  --mono-doc-rule:           #e2ddd3;
+
+  /* overlays — a scrim is dark in both themes, so ink on it is always light.
+   * `--mono-on-dark` is also the ink for anything sitting on a solid colour
+   * fill (a user-chosen tag colour, a status pill), which is why it does not
+   * follow the theme the way `--mono-text-on-accent` does.
+   *
+   * Parchment's scrim has to be this deep: at 0.45 over a cream ground it
+   * lands mid-grey, and `--mono-on-dark` reads at 2.8:1 on it. Put text on
+   * `--mono-scrim-strong` (5.7:1), not on `--mono-scrim`. */
+  --mono-scrim:              rgba(45, 40, 30, 0.55);
+  --mono-scrim-strong:       rgba(45, 40, 30, 0.72);
+  --mono-on-dark:            #fffef9;
+  --mono-on-dark-muted:      rgba(255, 254, 249, 0.75);
+  --mono-on-dark-line:       rgba(255, 254, 249, 0.28);
+  --mono-selection:          rgba(139, 94, 60, 0.22);
+
+  /* shadows — popovers and floating paper only; panels use borders */
+  --mono-shadow-sm:          0 1px 3px rgba(45, 40, 30, 0.06);
+  --mono-shadow-md:          0 2px 10px rgba(45, 40, 30, 0.07);
+  --mono-shadow-lg:          0 8px 24px rgba(45, 40, 30, 0.13);
+
+  /* non-color primitives shared across the suite */
+  --mono-radius-sm:          5px;
+  --mono-radius-md:          6px;
+  --mono-radius-lg:          8px;
+  --mono-radius-pill:        20px;
+  --mono-border-width:       1px;
+  --mono-active-edge:        2px;
+  --mono-transition:         120ms ease;
+  --mono-transition-panel:   160ms ease-out;
+
+  color-scheme: light;
+}
+
+/* -------------------------------------------------------- canonical: graphite */
+
+[data-theme="dark"] {
+  --mono-surface-editor:     #0f1013;
+  --mono-surface-paper:      #1c1e23;
+  --mono-surface-chrome:     #15161a;
+  --mono-surface-sunken:     #1c1e23;
+
+  --mono-line:               #2b2e35;
+  --mono-line-strong:        #3a3f48;
+  --mono-line-faint:         #1c1e23;
+
+  --mono-text:               #e4e6ea;
+  --mono-text-muted:         #c2c7cf;
+  --mono-text-faint:         #8b929c;
+  --mono-text-disabled:      #4a4f59;
+  --mono-text-on-accent:     #15161a;
+
+  --mono-accent:             #d99a4e;
+  --mono-accent-hover:       #e8b672;
+  --mono-accent-wash:        rgba(217, 154, 78, 0.07);
+  --mono-accent-wash-strong: rgba(217, 154, 78, 0.09);
+
+  --mono-error:              #d97b6c;
+  --mono-error-hover:        #e59182;
+  --mono-warning:            #d99a4e;
+  --mono-success:            #5cc08a;
+  --mono-success-hover:      #74cf9d;
+  --mono-info:               #6fa8d0;
+  --mono-error-wash:         rgba(217, 123, 108, 0.12);
+  --mono-warning-wash:       rgba(217, 154, 78, 0.12);
+  --mono-success-wash:       rgba(92, 192, 138, 0.12);
+  --mono-info-wash:          rgba(111, 168, 208, 0.12);
+
+  --mono-cat-1:              #d99a4e;
+  --mono-cat-2:              #6fa8d0;
+  --mono-cat-3:              #c58fd6;
+  --mono-cat-4:              #61b3a6;
+  --mono-cat-5:              #e8b672;
+  --mono-cat-6:              #d97b6c;
+  --mono-cat-7:              #9aa1ab;
+  --mono-cat-8:              #a9b477;
+  --mono-cat-9:              #d68fae;
+  --mono-cat-10:             #8f9ad6;
+  --mono-cat-11:             #6cbd95;
+  --mono-cat-12:             #d4a37e;
+  --mono-cat-13:             #90a2b5;
+  --mono-cat-14:             #b28fc0;
+  --mono-cat-15:             #9cb98a;
+
+  --mono-syn-keyword:        #c58fd6;
+  --mono-syn-type:           #61b3a6;
+  --mono-syn-string:         #6fa8d0;
+  --mono-syn-comment:        #8b929c;
+  --mono-syn-number:         #d99a4e;
+  --mono-syn-user:           #d99a4e;
+  --mono-syn-invalid:        #d97b6c;
+
+  /* Paper stays paper. A rendered page is a physical object; it is dimmed for
+   * a dark room rather than inverted. */
+  --mono-doc-bg:             #e8e6e0;
+  --mono-doc-text:           #1a1a1a;
+  --mono-doc-muted:          #333333;
+  --mono-doc-rule:           #cccccc;
+
+  --mono-scrim:              rgba(0, 0, 0, 0.55);
+  --mono-scrim-strong:       rgba(0, 0, 0, 0.72);
+  --mono-on-dark:            #fffef9;
+  --mono-on-dark-muted:      rgba(255, 254, 249, 0.75);
+  --mono-on-dark-line:       rgba(255, 254, 249, 0.28);
+  --mono-selection:          rgba(217, 154, 78, 0.30);
+
+  --mono-shadow-sm:          0 1px 3px rgba(0, 0, 0, 0.35);
+  --mono-shadow-md:          0 4px 12px rgba(0, 0, 0, 0.45);
+  --mono-shadow-lg:          0 8px 24px rgba(0, 0, 0, 0.55);
+
+  color-scheme: dark;
+}
+
+
+/* ================================================================== aliases
+ * Navigate's own variable names, mapped onto the canonical tokens.
+ * ==========================================================================*/
+
+:root {
+  --bg-primary:     var(--mono-surface-editor);
+  --bg-secondary:   var(--mono-surface-chrome);
+  --bg-tertiary:    var(--mono-surface-sunken);
+  --bg-card:        var(--mono-surface-paper);
+  --bg-hover:       var(--mono-accent-wash);
+
+  --text-primary:   var(--mono-text);
+  --text-secondary: var(--mono-text-muted);
+  --text-muted:     var(--mono-text-faint);
+  /* Ink on a solid accent/semantic fill — dark in Graphite, light in Parchment. */
+  --text-on-accent: var(--mono-text-on-accent);
+
+  --border-color:   var(--mono-line);
+  --border-strong:  var(--mono-line-strong);
+  --border-faint:   var(--mono-line-faint);
+
+  --accent:         var(--mono-accent);
+  --accent-color:   var(--mono-accent);
+  --accent-hover:   var(--mono-accent-hover);
+  --accent-wash:    var(--mono-accent-wash);
+  --accent-wash-strong: var(--mono-accent-wash-strong);
+
+  --success:        var(--mono-success);
+  --success-hover:  var(--mono-success-hover);
+  --success-wash:   var(--mono-success-wash);
+  --danger:         var(--mono-error);
+  --danger-color:   var(--mono-error);
+  --danger-hover:   var(--mono-error-hover);
+  --danger-wash:    var(--mono-error-wash);
+  --warning:        var(--mono-warning);
+  --warning-wash:   var(--mono-warning-wash);
+  --info:           var(--mono-info);
+  --info-wash:      var(--mono-info-wash);
+
+  --scrim:          var(--mono-scrim);
+  --scrim-strong:   var(--mono-scrim-strong);
+  --on-dark:        var(--mono-on-dark);
+  --on-dark-muted:  var(--mono-on-dark-muted);
+
+  --radius:         var(--mono-radius-lg);
+  --radius-sm:      var(--mono-radius-sm);
+  --shadow:         var(--mono-shadow-sm);
+  --shadow-md:      var(--mono-shadow-md);
+  --shadow-lg:      var(--mono-shadow-lg);
+  --transition:     var(--mono-transition);
+
+  /* ── arXiv category ribbons ──
+   * One slot on the categorical ramp per primary archive. They read the same
+   * token in both themes, so the light-theme overrides this file replaced are
+   * no longer needed. */
+  --cat-cs:        var(--mono-cat-2);   /* blue   */
+  --cat-math:      var(--mono-cat-5);   /* amber  */
+  --cat-astro-ph:  var(--mono-cat-3);   /* violet */
+  --cat-physics:   var(--mono-cat-4);   /* teal   */
+  --cat-cond-mat:  var(--mono-cat-12);  /* clay   */
+  --cat-hep:       var(--mono-cat-6);   /* red    */
+  --cat-stat:      var(--mono-cat-15);  /* moss   */
+  --cat-q-bio:     var(--mono-cat-11);  /* sea    */
+  --cat-q-fin:     var(--mono-cat-8);   /* olive  */
+  --cat-eess:      var(--mono-cat-13);  /* slate  */
+  --cat-econ:      var(--mono-cat-1);   /* brown  */
+  --cat-quant-ph:  var(--mono-cat-10);  /* indigo */
+  --cat-gr-qc:     var(--mono-cat-9);   /* rose   */
+  --cat-nucl:      var(--mono-cat-14);  /* plum   */
+  --cat-nlin:      var(--mono-cat-7);   /* neutral */
+
+  /* ── Reading tiers ──
+   * Tier 0 is the "must read" shelf and is deliberately the accent itself, so
+   * it is the one gold thing on the page. 1–4 step down the ramp. */
+  --tier-0:        var(--mono-accent);
+  --tier-1:        var(--mono-cat-3);
+  --tier-2:        var(--mono-cat-2);
+  --tier-3:        var(--mono-cat-4);
+  --tier-4:        var(--mono-cat-7);
+}
+
+/* ── Gilt ──
+ * Tier 0 is the one deliberately ornamental thing in the app: a shimmering
+ * gold frame around a "must read" card. Gold works on both parchment and
+ * graphite, so the ramp is gold in both themes — only its depth changes, so
+ * the ink stays legible on a light ground. */
+
+:root,
+[data-theme="light"] {
+  --gilt-hi:           #d9a860;
+  --gilt:              #b07830;
+  --gilt-deep:         #8b5e3c;
+  --gilt-glow:         rgba(176, 120, 48, 0.28);
+  --gilt-glow-strong:  rgba(176, 120, 48, 0.45);
+  --gilt-glow-faint:   rgba(176, 120, 48, 0.10);
+}
+
+[data-theme="dark"] {
+  --gilt-hi:           #f0c98a;
+  --gilt:              #d99a4e;
+  --gilt-deep:         #b07830;
+  --gilt-glow:         rgba(217, 154, 78, 0.28);
+  --gilt-glow-strong:  rgba(217, 154, 78, 0.45);
+  --gilt-glow-faint:   rgba(217, 154, 78, 0.08);
+}
+
+/* ── PDF dark-reading mode ──
+ * A viewer mode the reader turns on per document, independent of the UI theme:
+ * the page canvas is inverted, so these two do not follow `data-theme`. */
+
+:root {
+  --pdf-dark-bg:   #2a2a2a;
+  --pdf-dark-link: #6fa8d0;
+}

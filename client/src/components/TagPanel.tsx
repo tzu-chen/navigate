@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Tag } from '../types';
 import * as api from '../services/api';
+import { DEFAULT_ENTITY_COLOR } from '../palette';
 
 interface Props {
   paperId: number;
@@ -12,7 +13,7 @@ interface Props {
 
 export default function TagPanel({ paperId, paperTags, allTags, onRefresh, showNotification }: Props) {
   const [newTagName, setNewTagName] = useState('');
-  const [newTagColor, setNewTagColor] = useState('#6366f1');
+  const [newTagColor, setNewTagColor] = useState(DEFAULT_ENTITY_COLOR);
 
   const paperTagIds = new Set(paperTags.map(t => t.id));
   const availableTags = allTags.filter(t => !paperTagIds.has(t.id));

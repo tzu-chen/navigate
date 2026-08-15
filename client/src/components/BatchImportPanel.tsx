@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Tag, Worldline } from '../types';
 import * as api from '../services/api';
+import { DEFAULT_ENTITY_COLOR } from '../palette';
 
 interface Props {
   tags: Tag[];
@@ -14,11 +15,11 @@ export default function BatchImportPanel({ tags, showNotification, onImportCompl
   const [importSelectedTagIds, setImportSelectedTagIds] = useState<Set<number>>(new Set());
   const [allTags, setAllTags] = useState<Tag[]>(tags);
   const [newTagName, setNewTagName] = useState('');
-  const [newTagColor, setNewTagColor] = useState('#6366f1');
+  const [newTagColor, setNewTagColor] = useState(DEFAULT_ENTITY_COLOR);
   const [selectedWorldlineIds, setSelectedWorldlineIds] = useState<Set<number>>(new Set());
   const [newWorldlines, setNewWorldlines] = useState<Array<{ name: string; color: string }>>([]);
   const [newWlName, setNewWlName] = useState('');
-  const [newWlColor, setNewWlColor] = useState('#6366f1');
+  const [newWlColor, setNewWlColor] = useState(DEFAULT_ENTITY_COLOR);
   const [importLoading, setImportLoading] = useState(false);
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const [worldlines, setWorldlines] = useState<Worldline[]>([]);
