@@ -4902,6 +4902,96 @@ input[type="color"] {
 }
 
 /* ========================
+   Scout (Opus 5 listing triage)
+   ======================== */
+.scout-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 20px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+
+.scout-status-text strong {
+  color: var(--text-primary);
+}
+
+.scout-status-meta {
+  margin-left: auto;
+  color: var(--text-muted);
+}
+
+.scout-status-stale {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.scout-status-error {
+  color: var(--danger);
+}
+
+.paper-card.has-scout-finding {
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-card));
+}
+
+.scout-finding {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.scout-finding-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.scout-finding-score {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+.scout-finding-headline {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.scout-finding-reason {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.scout-finding-connections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.scout-finding-connection {
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+/* ========================
    Settings Threshold Slider
    ======================== */
 .settings-threshold-row {

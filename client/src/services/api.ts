@@ -1,4 +1,4 @@
-import { ArxivPaper, SavedPaper, Comment, CommentWithPaper, Tag, CategoryGroup, FavoriteAuthor, ChatMessage, ChatSession, WorldlineChatSession, Worldline, PaperSimilarityResult } from '../types';
+import { ArxivPaper, SavedPaper, Comment, CommentWithPaper, Tag, CategoryGroup, FavoriteAuthor, ChatMessage, ChatSession, WorldlineChatSession, Worldline, PaperSimilarityResult, ScoutScanResult } from '../types';
 import {
   coerceSchemeId,
   DEFAULT_SCHEME_ID,
@@ -584,6 +584,20 @@ export async function dismissWorldlineFlag(arxivId: string, worldlineId: number)
   await request('/worldlines/flag/dismiss', {
     method: 'POST',
     body: JSON.stringify({ arxiv_id: arxivId, worldline_id: worldlineId }),
+  });
+}
+
+// Scout (Opus 5 listing triage)
+// The server keys each scan on the exact set of preprints sent, so calling this
+// again for an unchanged listing returns the stored verdict without an API call.
+export async function scanWithScout(
+  papers: { id: string; title: string; summary: string; authors: string[]; categories: string[] }[],
+  category?: string,
+  force = false
+): Promise<ScoutScanResult> {
+  return request('/scout/scan', {
+    method: 'POST',
+    body: JSON.stringify({ papers, category, force }),
   });
 }
 

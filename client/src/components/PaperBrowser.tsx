@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArxivPaper, CategoryGroup, PaperSimilarityResult, WorldlineSimilarityMatch } from '../types';
+import { ArxivPaper, CategoryGroup, PaperSimilarityResult, WorldlineSimilarityMatch, ScoutFinding, ScoutScanResult } from '../types';
 import * as api from '../services/api';
 import LaTeX from './LaTeX';
 
@@ -39,6 +39,12 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
   // Flag accept/reject UI state, keyed `${paperId}:${worldlineId}`.
   const [assigningFlags, setAssigningFlags] = useState<Set<string>>(new Set());
   const [assignedFlags, setAssignedFlags] = useState<Set<string>>(new Set());
+  // Scout: Opus-5 triage of the visible listing against the saved library.
+  const [scoutResult, setScoutResult] = useState<ScoutScanResult | null>(null);
+  const [scoutFindings, setScoutFindings] = useState<Map<string, ScoutFinding>>(new Map());
+  const [scoutLoading, setScoutLoading] = useState(false);
+  const [scoutError, setScoutError] = useState('');
+  const [scoutOnly, setScoutOnly] = useState(false);
   const [activeTab, setActiveTab] = useState<'new' | 'cross' | 'replace'>('new');
   const [showMobileSearch, setShowMobileSearch] = useState(false);
   const [arxivIdInput, setArxivIdInput] = useState('');
@@ -114,6 +120,15 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
 
     return () => controller.abort();
   }, [papers]);
+
+  // A Scout verdict belongs to one exact listing. Switching category, feed, or
+  // announcement tab changes the scanned set, so the old findings no longer apply.
+  useEffect(() => {
+    setScoutResult(null);
+    setScoutFindings(new Map());
+    setScoutError('');
+    setScoutOnly(false);
+  }, [papers, activeTab]);
 
   useEffect(() => {
     onPapersLoaded?.(papers, page * PAGE_SIZE, totalResults);
@@ -270,6 +285,35 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
     });
   }
 
+  // Ask Opus 5 which of the listed preprints matter given the saved library.
+  // The server returns a stored verdict for free when this exact listing has
+  // already been scanned; `force` pays for a fresh one.
+  async function handleScout(force = false) {
+    if (scoutLoading || displayedPapers.length === 0) return;
+    setScoutLoading(true);
+    setScoutError('');
+    try {
+      const result = await api.scanWithScout(
+        displayedPapers.map(p => ({
+          id: p.id,
+          title: p.title,
+          summary: p.summary,
+          authors: p.authors,
+          categories: p.categories,
+        })),
+        favoritesMode ? 'favorites' : selectedCategory,
+        force
+      );
+      setScoutResult(result);
+      setScoutFindings(new Map(result.findings.map(f => [f.arxivId, f])));
+      if (result.findings.length === 0) setScoutOnly(false);
+    } catch (err) {
+      setScoutError(err instanceof Error ? err.message : 'Scout scan failed');
+    } finally {
+      setScoutLoading(false);
+    }
+  }
+
   function toggleAbstract(id: string) {
     setExpandedAbstracts(prev => {
       const next = new Set(prev);
@@ -313,6 +357,11 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
     : isLatestMode
       ? (activeTab === 'new' ? newPapers : activeTab === 'cross' ? crossPapers : replacePapers)
       : papers;
+
+  // Scout scans (and filters) exactly what's on screen.
+  const visiblePapers = scoutOnly
+    ? displayedPapers.filter(p => scoutFindings.has(p.id))
+    : displayedPapers;
 
   return (
     <div className="paper-browser">
@@ -425,9 +474,76 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
                 {favoritesMode ? '★ Favorites (on)' : '★ Favorites'}
               </button>
             </div>
+
+            <div className="control-group">
+              <label>Scout</label>
+              <button
+                type="button"
+                className={`btn btn-sm ${scoutResult ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => handleScout(false)}
+                disabled={scoutLoading || loading || displayedPapers.length === 0}
+                title={displayedPapers.length === 0
+                  ? 'Nothing listed to scan'
+                  : `Scan these ${displayedPapers.length} preprints against your library with Opus 5. Re-scanning an unchanged listing is free.`}
+              >
+                {scoutLoading ? 'Scanning…' : '⚡ Scan listing'}
+              </button>
+            </div>
           </div>
         </div>
       </div>
+
+      {(scoutResult || scoutError) && (
+        <div className="scout-status-bar">
+          {scoutError ? (
+            <span className="scout-status-error">Scout: {scoutError}</span>
+          ) : scoutResult && (
+            <>
+              <span className="scout-status-text">
+                <strong>Scout</strong>
+                {scoutResult.findings.length > 0
+                  ? ` flagged ${scoutResult.findings.length} of ${scoutResult.scannedCount} preprints`
+                  : ` found nothing worth flagging in ${scoutResult.scannedCount} preprints`}
+                {scoutResult.truncated > 0 && ` (${scoutResult.truncated} beyond the scan limit were skipped)`}
+              </span>
+              {scoutResult.findings.length > 0 && (
+                <button
+                  className={`btn btn-sm ${scoutOnly ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setScoutOnly(!scoutOnly)}
+                >
+                  {scoutOnly ? 'Show all' : 'Show only flagged'}
+                </button>
+              )}
+              <span
+                className="scout-status-meta"
+                title={[
+                  scoutResult.model,
+                  scoutResult.backend === 'cli' ? 'via claude CLI (billed to your Claude Code plan)' : 'via Anthropic API',
+                  `${scoutResult.usage.input_tokens} in / ${scoutResult.usage.output_tokens} out`,
+                  `${scoutResult.usage.estimated_cost.toFixed(3)} USD${scoutResult.backend === 'cli' ? ' list-price equivalent' : ''}`,
+                ].join(' · ')}
+              >
+                {scoutResult.cached
+                  ? `cached from ${new Date(scoutResult.scannedAt).toLocaleString()}`
+                  : `${scoutResult.backend === 'cli' ? '≈' : ''}$${scoutResult.usage.estimated_cost.toFixed(3)}`}
+              </span>
+              {scoutResult.libraryChanged && (
+                <span className="scout-status-stale" title="Your library changed after this scan ran, so a rescan may reach different conclusions.">
+                  library changed since
+                </span>
+              )}
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => handleScout(true)}
+                disabled={scoutLoading}
+                title="Run a fresh scan (costs an API call)"
+              >
+                Rescan
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {favoritesMode && (
         <div className="favorites-status-bar">
@@ -503,14 +619,15 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
       )}
 
       <div className="paper-list">
-        {displayedPapers.map((paper, index) => {
+        {visiblePapers.map((paper, index) => {
           const isSaved = savedPaperIds.has(paper.id);
           const isSaving = savingIds.has(paper.id);
           const isExpanded = expandedAbstracts.has(paper.id);
           const worldlineMatches = similarityMap.get(paper.id);
+          const scoutFinding = scoutFindings.get(paper.id);
 
           // Show date separator when listing date changes between papers
-          const prevPaper = index > 0 ? displayedPapers[index - 1] : null;
+          const prevPaper = index > 0 ? visiblePapers[index - 1] : null;
           const showDateSeparator = isRecentlyUpdatedMode && paper.listingDate && (
             !prevPaper || !prevPaper.listingDate ||
             new Date(paper.listingDate).toDateString() !== new Date(prevPaper.listingDate).toDateString()
@@ -532,7 +649,7 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
               )}
               <div className="paper-card-row">
               <span className="paper-number">{index + 1}</span>
-              <div className={`paper-card ${worldlineMatches ? 'has-worldline-match' : ''}`}>
+              <div className={`paper-card ${worldlineMatches ? 'has-worldline-match' : ''} ${scoutFinding ? 'has-scout-finding' : ''}`}>
               <div className="paper-card-header">
                 <h3 className="paper-title" onClick={() => onOpenPaper(paper)}>
                   <LaTeX>{paper.title}</LaTeX>
@@ -553,6 +670,25 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
                   )}
                 </div>
               </div>
+
+              {scoutFinding && (
+                <div className="scout-finding">
+                  <div className="scout-finding-head">
+                    <span className="scout-finding-score" title={`Scout relevance ${scoutFinding.score}/100`}>
+                      ⚡ {scoutFinding.score}
+                    </span>
+                    <span className="scout-finding-headline">{scoutFinding.headline}</span>
+                  </div>
+                  <p className="scout-finding-reason">{scoutFinding.reason}</p>
+                  {scoutFinding.connections.length > 0 && (
+                    <div className="scout-finding-connections">
+                      {scoutFinding.connections.map(c => (
+                        <span key={c} className="scout-finding-connection">{c}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {worldlineMatches && worldlineMatches.length > 0 && (
                 <div className="worldline-matches">

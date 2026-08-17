@@ -15,7 +15,7 @@ npm run build:server      # Build backend only (tsc)
 npm start                 # Start production server (serves API + built frontend from client/dist/)
 ```
 
-The Vite dev server proxies `/api` requests to `http://localhost:3001`. No `.env` files are used. Server environment variables: `PORT` (defaults to 3001), `SUITE_DATA_ROOT` (optional, part of the suite data-centralization scheme), and `SIMILARITY_NUM_THREADS` (optional, caps the SPECTER2 ONNX intra-op thread pool; defaults to 2 to keep CPU/fan in check). The Claude API key is stored client-side in localStorage.
+The Vite dev server proxies `/api` requests to `http://localhost:3001`. No `.env` files are used. Server environment variables: `PORT` (defaults to 3001), `SUITE_DATA_ROOT` (optional, part of the suite data-centralization scheme), `CLAUDE_CLI_PATH` (optional, overrides where Scout looks for the `claude` binary), and `SIMILARITY_NUM_THREADS` (optional, caps the SPECTER2 ONNX intra-op thread pool; defaults to 2 to keep CPU/fan in check). The Claude API key is stored client-side in localStorage.
 
 **`SUITE_DATA_ROOT` (data location).** The data directory is resolved in one place — `server/src/services/paths.ts` (imported by `database.ts` and `pdf.ts`). When `SUITE_DATA_ROOT` is set, data lives at `$SUITE_DATA_ROOT/navigate/` (`papers.db`, `pdfs/`, `pdf-cache/`); when unset, it falls back **byte-for-byte** to the legacy in-repo `server/data/`. Do not duplicate or "fix" this path — add new data under `DATA_DIR` from `paths.ts`.
 
@@ -40,9 +40,9 @@ paperpile-navigate/
 │   └── vite.config.ts            # Vite config with /api proxy to port 3001
 └── server/               # Express backend
     ├── src/
-    │   ├── index.ts              # Express entry point, mounts 8 route modules
+    │   ├── index.ts              # Express entry point, mounts 10 route modules
     │   ├── types.ts              # Mirrors client types + category constants
-    │   ├── routes/               # 8 RESTful route handlers
+    │   ├── routes/               # 10 RESTful route handlers
     │   └── services/             # Business logic (DB, ArXiv API, PDF, export, similarity)
     └── data/                     # Runtime data (gitignored)
         ├── papers.db             # SQLite database
@@ -77,7 +77,7 @@ paperpile-navigate/
 
 ### Server (`server/src/`)
 
-* **index.ts** — Express entry point. CORS enabled, JSON body parser (10MB limit). Mounts 8 route modules under `/api`. Serves static client build from `client/dist/` in production with SPA fallback. Initializes database and PDF storage on startup.
+* **index.ts** — Express entry point. CORS enabled, JSON body parser (10MB limit). Mounts 10 route modules under `/api`. Serves static client build from `client/dist/` in production with SPA fallback. Initializes database and PDF storage on startup.
 * **routes/** — RESTful route handlers:
   + `arxiv.ts` — Search, categories, latest/recent papers, single paper fetch, PDF proxy (avoids CORS)
   + `papers.ts` — Full CRUD for saved papers + bulk operations (download-pdfs, delete-pdfs, delete, tier, add-tag, remove-tag) + sub-routes for comments and tags
@@ -87,6 +87,8 @@ paperpile-navigate/
   + `export.ts` — BibTeX and Paperpile JSON generation. Citation key format: `{LastName}{Year}{ArxivId}`. Embeds tags as keywords and comments as notes. Also streams a ZIP archive of selected local PDFs (`GET /api/export/pdfs?ids=`).
   + `worldlines.ts` — Worldline CRUD, paper assignment with position ordering, embedding similarity scoring + flag log/dismiss/stats (see Similarity System below), batch import from ArXiv
   + `settings.ts` — Key-value settings CRUD (API key, similarity threshold, etc.)
+  + `scribe.ts` — Hands selected papers' PDFs off to the Scribe app (`http://localhost:3003`) and deletes them locally
+  + `scout.ts` — Opus-5 listing triage: `POST /scan` (idempotent per listing), `GET /runs` (diagnostics). See Scout below.
 * **services/** — Business logic layer:
   + `database.ts` — SQLite with better-sqlite3. WAL mode, foreign keys enabled. 40+ query functions, all parameterized. Schema created/migrated in `initializeDatabase()`.
   + `arxiv.ts` — ArXiv REST API client (`http://export.arxiv.org/api/query`). XML parsing via xml2js. Functions for search, author search, single paper fetch, latest (RSS), and recent (HTML scraping).
@@ -94,6 +96,7 @@ paperpile-navigate/
   + `pdf.ts` — PDF storage management under `server/data/pdfs/`. Download, store, delete, path resolution. ArXiv IDs escaped (`/` → `_`) for filenames.
   + `similarity.ts` — embedding backends + similarity orchestration; `similarity-core.ts` holds the pure, unit-testable decision logic (see Similarity System below).
   + `paperpile.ts` — BibTeX/Paperpile export formatting with author name parsing.
+  + `scout.ts` — library profile + Opus-5 listing triage over two backends (`claude -p` subprocess, or the REST API). See Scout below.
 
 ### Similarity System
 
@@ -141,9 +144,44 @@ To swap models, change the backend's `version` string in `similarity.ts`; the ve
 
 **Dependencies added:** `@huggingface/transformers` (tokenizer + MiniLM fallback) and `onnxruntime-node` (SPECTER2 ONNX inference), server-side only.
 
+### Scout (Opus-5 listing triage)
+
+**On-demand LLM triage of a browse listing against the whole library.** Where the Similarity System asks the narrow, cheap, local question *"does this paper belong to an existing worldline?"*, Scout asks the judgement-shaped one — *"given everything I've saved and how I rated it, is this worth my attention today?"* — which needs a model that can read an abstract. Same precision-first stance: it is capped at **8 findings**, told that "same subfield as something you saved" is not a reason, and told that an empty result is a correct answer on an ordinary day.
+
+**Two files:** `services/scout.ts` (library profile, prompt, model call, output normalization) and `routes/scout.ts` (idempotency, persistence, error mapping).
+
+**Flow.** The browse page's ⚡ **Scan listing** button posts the *currently displayed* papers (the active announcement tab, favorites feed, or search page) to `POST /api/scout/scan`. The server builds a **library profile** — worldlines with member titles, T0/T1-rated saves, tags, followed authors, recent saves, library size — renders it into a cached system prompt, and sends the candidates as the user turn. Findings come back as `{arxivId, score (0–100), headline, reason, connections[]}` and are rendered as a highlighted block on the matching paper card, with a "Show only flagged" filter.
+
+**No redundant runs (the core constraint).** Every run is stored in `scout_runs`, keyed by `sha256(category | sorted candidate arXiv IDs)` — the identity of *the exact listing triaged*. Pressing the button again while arXiv hasn't announced returns the stored verdict with `cached: true` and **no API call** (it doesn't even need an API key). A new announcement changes the ID set, hence the key, hence a fresh run. Concurrent requests for the same key are coalesced in memory, so a double-click can't become two paid calls. `force: true` (the **Rescan** button) overrides and upserts the row.
+
+The run also stores a **library fingerprint** (a hash of the rendered profile). It deliberately does *not* participate in the cache key — saving a paper mid-session should not silently re-bill the listing — but a mismatch surfaces as `libraryChanged: true`, which the status bar shows as "library changed since" next to Rescan.
+
+**Two backends**, selected by the `scoutBackend` setting (server-side, via `PUT /api/settings/scoutBackend`):
+
+* **`cli` (default)** — shells out to `claude -p`. Scans bill against the local **Claude Code subscription** rather than metered API credits, and no API key has to be stored. Requires the `claude` CLI on the server process's PATH (override with the `CLAUDE_CLI_PATH` env var).
+* **`api`** — posts to the Anthropic REST API with the stored `claudeApiKey`, the way `chat.ts` does. For a headless deploy with no CLI, or when scans should bill to the API account.
+
+Both produce the same validated `ScoutFinding[]`; the backend used is recorded on the run and returned to the client, because the cost figure means different things on each.
+
+**Model call — `cli`.** `buildCliArgs()` assembles: `-p --output-format json --model claude-opus-5 --effort medium --tools "" --system-prompt <scout prompt> --json-schema <findings schema> --no-session-persistence --strict-mcp-config`. Three of those matter:
+
+* `--system-prompt` **replaces** Claude Code's coding-agent prompt — this is a text-judgement task, not a coding session.
+* `--tools ""` disables every built-in tool. Nothing here should touch the filesystem or network.
+* `--json-schema` is the CLI's structured-output validation, so the envelope comes back with a parsed `structured_output` object plus real `usage` and a `total_cost_usd` the CLI computes itself.
+
+⚠️ **The subprocess must run from a neutral cwd** (`os.tmpdir()`). Claude Code auto-discovers `CLAUDE.md` by walking up from its working directory, so spawning inside this repo silently prepends ~10k tokens of project context to *every* scan — measured at 10,835 vs 602 cached tokens ($0.11 vs $0.008) for an identical trivial prompt.
+
+**Model call — `api`.** `claude-opus-5` via REST (no SDK). Adaptive thinking is on by default on Opus 5 and `max_tokens` (16000) bounds thinking + output together. `output_config.effort: 'medium'` — Opus 5 is unusually strong at the lower effort levels and this is a bounded judgement task. Output is constrained with `output_config.format`; if that parameter is rejected with a 400 the call retries once asking for JSON in the prompt, since `normalizeFindings` validates either way.
+
+`normalizeFindings` is the trust boundary for both backends: findings naming a paper that wasn't in the candidate set (or a duplicate) are dropped, scores clamped to 0–100, results capped and sorted.
+
+**Cost.** Listings are capped at **120 candidates** (`MAX_CANDIDATES`) and abstracts truncated to 1200 chars; the response reports how many were skipped. On the `api` backend the system prompt carries a `cache_control: ephemeral` breakpoint so back-to-back scans on an unchanged library re-read that prefix; the CLI caches the same prefix on its own (observed 1h ephemeral). Per-run token usage and cost are stored and shown in the status bar — prefixed `≈` on the `cli` backend, where the figure is the **list-price equivalent** of work billed to the plan, not money charged to an API account. `GET /api/scout/runs` lists recent runs for spend/finding history.
+
+**Verification:** `npm run verify:scout --prefix server` covers everything that doesn't need a model call — scan-key identity (order-insensitive, set-sensitive), library fingerprinting, the run store's upsert-on-rescan, model-output normalization, and the CLI argument vector — against an isolated temp DB via `SUITE_DATA_ROOT`.
+
 ### Database Schema (`server/data/papers.db`)
 
-SQLite database created at runtime. 12 tables with cascade deletion:
+SQLite database created at runtime. 13 tables with cascade deletion:
 
 | Table | Key Columns | Constraints |
 | --- | --- | --- |
@@ -159,14 +197,15 @@ SQLite database created at runtime. 12 tables with cascade deletion:
 | `settings` | key, value | key PRIMARY KEY (UNIQUE) |
 | `paper_embeddings` | arxiv_id, embedding, model_version, created_at | arxiv_id PRIMARY KEY |
 | `flag_log` | id, arxiv_id, worldline_id, score, runner_up_score, margin, corroboration_kind, category, flagged_at, accepted, decided_at | UNIQUE(arxiv_id, worldline_id), FK→worldlines CASCADE |
+| `scout_runs` | id, cache_key, category, scanned_ids, paper_count, library_fingerprint, model, backend, findings, token counts, estimated_cost, created_at | cache_key UNIQUE (upserted on forced rescan) |
 
-Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `paper_tags.tag_id`, `worldline_papers.worldline_id`, `worldline_papers.paper_id`, `chat_sessions.arxiv_id`, `chat_sessions.worldline_id`, `chat_sessions.session_type`, `paper_embeddings.model_version`, `flag_log.worldline_id`, `flag_log.category`, `flag_log.accepted`.
+Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `paper_tags.tag_id`, `worldline_papers.worldline_id`, `worldline_papers.paper_id`, `chat_sessions.arxiv_id`, `chat_sessions.worldline_id`, `chat_sessions.session_type`, `paper_embeddings.model_version`, `flag_log.worldline_id`, `flag_log.category`, `flag_log.accepted`, `scout_runs.created_at`.
 
 ### Storage Split
 
 **Important:** The project was originally client-side only, storing everything in localStorage. Most data has since been migrated server-side. Do not introduce new localStorage keys for persistent data — use the server-side settings or database instead.
 
-* **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines, chat sessions + messages, settings (Claude API key, similarity threshold), paper embeddings, worldline flag log
+* **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines, chat sessions + messages, settings (Claude API key, similarity threshold, Scout backend), paper embeddings, worldline flag log, Scout runs
 * **Client-side (localStorage)**: Only visual preferences that affect rendering before API loads — color scheme and card font size (`paperpile-navigate-visual-prefs`)
 
 ## Key Dependencies
@@ -208,3 +247,11 @@ Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `pape
 ### Testing
 
 No test framework is currently configured. Validate changes by running `npm run build` (runs `tsc` for both client and server, catching type errors).
+
+Targeted verification harnesses live in `server/scripts/` and run against isolated temp data (`SUITE_DATA_ROOT`), never real data or the Claude API:
+
+```
+npm run verify:similarity --prefix server   # similarity-core decision logic + flag log
+npm run verify:specter2   --prefix server   # loads the embedding model (the one gate that needs it)
+npm run verify:scout      --prefix server   # Scout scan-key identity, fingerprint, run store, output normalization
+```

@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "verify:similarity": "tsx scripts/verify-similarity.ts",
     "verify:specter2": "tsx scripts/verify-specter2.ts",
+    "verify:scout": "tsx scripts/verify-scout.ts",
     "diagnose": "tsx scripts/diagnose-worldlines.ts"
   },
   "dependencies": {

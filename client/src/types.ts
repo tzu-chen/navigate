@@ -120,6 +120,36 @@ export interface PaperSimilarityResult {
   matches: WorldlineSimilarityMatch[];
 }
 
+/** One preprint the Scout (Opus 5) judged worth surfacing, with its rationale. */
+export interface ScoutFinding {
+  arxivId: string;
+  score: number;
+  headline: string;
+  reason: string;
+  connections: string[];
+}
+
+export interface ScoutScanResult {
+  findings: ScoutFinding[];
+  /** True when this verdict came from a stored run rather than a fresh model call. */
+  cached: boolean;
+  /** The library changed since a cached scan ran, so a rescan may differ. */
+  libraryChanged: boolean;
+  scannedCount: number;
+  truncated: number;
+  model: string;
+  /** 'cli' billed the local Claude Code plan; 'api' billed the API account. */
+  backend: 'cli' | 'api';
+  scannedAt: string;
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens: number;
+    cache_read_input_tokens: number;
+    estimated_cost: number;
+  };
+}
+
 export interface WorldlineChatSession {
   id: string;
   worldlineId: number;

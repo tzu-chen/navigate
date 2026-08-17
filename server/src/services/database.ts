@@ -141,6 +141,24 @@ export function initializeDatabase(): void {
       FOREIGN KEY (worldline_id) REFERENCES worldlines(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS scout_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cache_key TEXT NOT NULL UNIQUE,
+      category TEXT,
+      scanned_ids TEXT NOT NULL,
+      paper_count INTEGER NOT NULL,
+      library_fingerprint TEXT NOT NULL,
+      model TEXT NOT NULL,
+      backend TEXT NOT NULL DEFAULT 'api',
+      findings TEXT NOT NULL,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_creation_input_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      estimated_cost REAL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_arxiv_id ON chat_sessions(arxiv_id);
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_worldline_id ON chat_sessions(worldline_id);
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_type ON chat_sessions(session_type);
@@ -149,6 +167,7 @@ export function initializeDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_flag_log_worldline ON flag_log(worldline_id);
     CREATE INDEX IF NOT EXISTS idx_flag_log_category ON flag_log(category);
     CREATE INDEX IF NOT EXISTS idx_flag_log_accepted ON flag_log(accepted);
+    CREATE INDEX IF NOT EXISTS idx_scout_runs_created ON scout_runs(created_at);
   `);
 
   // Migration: add pdf_path column if it doesn't exist
@@ -181,6 +200,13 @@ export function initializeDatabase(): void {
   // Migration: add position_rects (JSON of normalized rects per page) for underline rendering
   if (!commentColumns.some(c => c.name === 'position_rects')) {
     db.exec("ALTER TABLE comments ADD COLUMN position_rects TEXT");
+  }
+
+  // Migration: record which backend produced a Scout run. Rows written before
+  // the `claude -p` backend existed all came from the REST API.
+  const scoutColumns = db.prepare("PRAGMA table_info('scout_runs')").all() as { name: string }[];
+  if (scoutColumns.length > 0 && !scoutColumns.some(c => c.name === 'backend')) {
+    db.exec("ALTER TABLE scout_runs ADD COLUMN backend TEXT NOT NULL DEFAULT 'api'");
   }
 }
 
@@ -584,6 +610,77 @@ export function getFlagStats(): { overall: FlagStatsRow; byCategory: FlagStatsRo
 
 export function getFlags(limit = 500) {
   return db.prepare('SELECT * FROM flag_log ORDER BY flagged_at DESC, id DESC LIMIT ?').all(limit);
+}
+
+// Scout run operations (Opus-5 listing triage)
+// One row per scanned listing, keyed by the exact set of preprints triaged —
+// that key is what makes a repeat press of the Scan button free.
+export interface ScoutRunRow {
+  id: number;
+  cache_key: string;
+  category: string | null;
+  scanned_ids: string;
+  paper_count: number;
+  library_fingerprint: string;
+  model: string;
+  backend: string;
+  findings: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  estimated_cost: number | null;
+  created_at: string;
+}
+
+export function getScoutRun(cacheKey: string): ScoutRunRow | undefined {
+  return db.prepare('SELECT * FROM scout_runs WHERE cache_key = ?').get(cacheKey) as
+    | ScoutRunRow
+    | undefined;
+}
+
+export function saveScoutRun(run: {
+  cache_key: string;
+  category: string | null;
+  scanned_ids: string;
+  paper_count: number;
+  library_fingerprint: string;
+  model: string;
+  backend: string;
+  findings: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  estimated_cost: number;
+}) {
+  // A forced rescan replaces the earlier verdict for the same listing.
+  return db.prepare(`
+    INSERT INTO scout_runs
+      (cache_key, category, scanned_ids, paper_count, library_fingerprint, model, backend, findings,
+       input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, estimated_cost)
+    VALUES
+      (@cache_key, @category, @scanned_ids, @paper_count, @library_fingerprint, @model, @backend, @findings,
+       @input_tokens, @output_tokens, @cache_creation_input_tokens, @cache_read_input_tokens, @estimated_cost)
+    ON CONFLICT(cache_key) DO UPDATE SET
+      category = excluded.category,
+      scanned_ids = excluded.scanned_ids,
+      paper_count = excluded.paper_count,
+      library_fingerprint = excluded.library_fingerprint,
+      model = excluded.model,
+      backend = excluded.backend,
+      findings = excluded.findings,
+      input_tokens = excluded.input_tokens,
+      output_tokens = excluded.output_tokens,
+      cache_creation_input_tokens = excluded.cache_creation_input_tokens,
+      cache_read_input_tokens = excluded.cache_read_input_tokens,
+      estimated_cost = excluded.estimated_cost,
+      created_at = datetime('now')
+  `).run(run);
+}
+
+export function getScoutRuns(limit = 50): ScoutRunRow[] {
+  return db.prepare('SELECT * FROM scout_runs ORDER BY created_at DESC, id DESC LIMIT ?').all(limit) as ScoutRunRow[];
 }
 
 // PDF path operations
