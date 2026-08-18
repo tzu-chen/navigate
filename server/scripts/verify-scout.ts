@@ -96,7 +96,71 @@ function ok(cond: boolean, msg: string) {
   ok(profile.topTier.length === 1, 'profile carries the T0 rating');
   ok(profile.totalSaved === 1, 'profile carries the library size');
 
-  console.log('\nPhase 3 — run store\n');
+  console.log('\nPhase 3 — the ever-saved ledger (papers that left the library)\n');
+
+  ok(db.getPaperArchive().length === 1, 'saving a paper enrols it in the ever-saved ledger');
+  ok(db.getDepartedPapers().length === 0, 'a paper still held has not departed');
+
+  // Hand it to Scribe: gone from the library, but not forgotten.
+  db.deletePaper(saved.id, 'scribe');
+
+  ok(db.getPaperByArxivId('2301.11111') === undefined, 'the paper is gone from the library');
+
+  const gone = db.getDepartedPapers();
+  ok(gone.length === 1, 'the departed paper survives in the ledger');
+  ok(gone[0].disposition === 'scribe', 'the ledger records that it went to Scribe');
+  ok(gone[0].removed_at !== null, 'the ledger records when it left');
+  ok(gone[0].tier === 0, 'the T0 rating is snapshotted before the row is deleted');
+  ok(
+    JSON.parse(gone[0].worldlines)[0] === 'spectral-graphs',
+    'worldline membership is snapshotted before the cascade takes it'
+  );
+
+  // The point of all of the above: Scout must still see it.
+  const afterDeparture = buildLibraryProfile();
+  ok(afterDeparture.totalSaved === 1, 'the profile still counts a paper that left');
+  ok(afterDeparture.currentlyHeld === 0, 'the profile reports how many are still stored here');
+  ok(afterDeparture.topTier.length === 1, 'a departed T0 still carries its rating into the prompt');
+  ok(
+    afterDeparture.worldlines.length === 1 &&
+      afterDeparture.worldlines[0].titles.includes('Spectral methods for graph transformers'),
+    'a departed paper still appears under its research thread'
+  );
+  ok(
+    afterDeparture.recentSaves.includes('Spectral methods for graph transformers'),
+    'a departed paper still counts as a recent save'
+  );
+  ok(
+    fingerprintLibraryProfile(afterDeparture) !== fpAfterWorldline,
+    'departure changes the fingerprint, so a cached scan reports the library changed'
+  );
+
+  // Re-saving something that had left brings it back without rewriting history.
+  db.savePaper({
+    arxiv_id: '2301.11111',
+    title: 'Spectral methods for graph transformers',
+    summary: 'An abstract.',
+    authors: JSON.stringify(['A. Author']),
+    published: '2023-01-01T00:00:00Z',
+    updated: '2023-01-01T00:00:00Z',
+    categories: JSON.stringify(['cs.LG']),
+    pdf_url: 'https://arxiv.org/pdf/2301.11111',
+    abs_url: 'https://arxiv.org/abs/2301.11111',
+    doi: undefined,
+    journal_ref: undefined,
+  });
+  const readded = db.getPaperArchive()[0];
+  ok(readded.disposition === 'library' && readded.removed_at === null, 're-saving returns a paper to the library');
+  ok(readded.first_saved_at === gone[0].first_saved_at, 're-saving preserves when it was first saved');
+  ok(db.getPaperArchive().length === 1, 'the ledger holds one row per paper, not one per save');
+
+  // A plain delete is recorded too — the ledger is every paper ever saved.
+  const reSaved = db.getPaperByArxivId('2301.11111') as { id: number };
+  db.bulkDeletePapers([reSaved.id]);
+  ok(db.getDepartedPapers()[0].disposition === 'removed', 'a plain delete is recorded as removed, not as a Scribe hand-off');
+  ok(buildLibraryProfile().totalSaved === 1, 'a plainly deleted paper still counts as ever-saved');
+
+  console.log('\nPhase 4 — run store\n');
 
   ok(db.getScoutRun(key) === undefined, 'an unscanned listing has no stored run');
 
@@ -142,7 +206,7 @@ function ok(cond: boolean, msg: string) {
   ok(JSON.parse(db.getScoutRun(key)!.findings).length === 0, 'the overwritten run holds the newer verdict');
   ok(db.getScoutRun(key)!.backend === 'api', 'the overwritten run records the newer backend');
 
-  console.log('\nPhase 4 — normalizing model output\n');
+  console.log('\nPhase 5 — normalizing model output\n');
 
   const candidates = [
     { id: '2401.0001', title: 'A', summary: '', authors: [] },
@@ -176,7 +240,7 @@ function ok(cond: boolean, msg: string) {
   );
   ok(clamped[0].score === 100, 'scores are clamped to 0-100');
 
-  console.log('\nPhase 5 — claude CLI invocation\n');
+  console.log('\nPhase 6 — claude CLI invocation\n');
 
   const args = buildCliArgs('SYSTEM');
   const flag = (name: string) => args[args.indexOf(name) + 1];

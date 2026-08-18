@@ -105,7 +105,10 @@ export interface LibraryProfile {
   tags: string[];
   favoriteAuthors: string[];
   recentSaves: string[];
+  /** Every paper ever saved, whether or not it is still stored in Navigate. */
   totalSaved: number;
+  /** How many of those are still in Navigate. Reported for honesty, not weighted. */
+  currentlyHeld: number;
 }
 
 const TIER_NAMES: Record<number, string> = {
@@ -117,26 +120,75 @@ const TIER_NAMES: Record<number, string> = {
 };
 
 export function buildLibraryProfile(): LibraryProfile {
-  const worldlines = db
-    .getAllWorldlinesWithPapers()
-    .filter(wl => wl.papers.length > 0)
-    .map(wl => ({
-      name: wl.name,
-      titles: wl.papers.slice(0, MAX_WORLDLINE_TITLES).map(p => p.title),
-    }));
-
   const papers = db.getPapers() as SavedPaper[];
 
-  // Ratings are the strongest available signal for taste: T0/T1 are the papers
-  // the user judged genuinely important.
-  const topTier = papers
-    .filter(p => p.tier !== null && p.tier <= 1)
-    .sort((a, b) => (a.tier ?? 9) - (b.tier ?? 9))
-    .slice(0, MAX_TOP_TIER_TITLES)
-    .map(p => ({ tier: TIER_NAMES[p.tier as number] ?? `T${p.tier}`, title: p.title }));
+  // Papers that were saved and have since left Navigate — handed to Scribe for
+  // systematic study, or cleared out. A save is a judgement the user made, and
+  // deleting the row does not withdraw it: these count as library context
+  // exactly like the papers still held. Without this, promoting a paper to deep
+  // study would make Scout forget the very papers the user cared about most.
+  const departed = db.getDepartedPapers();
 
-  // getPapers() is already ordered by added_at DESC.
-  const recentSaves = papers.slice(0, MAX_RECENT_TITLES).map(p => p.title);
+  const parseNames = (json: string): string[] => {
+    try {
+      const parsed = JSON.parse(json);
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  // Worldline membership cascades away with the paper, so a departed paper's
+  // thread is read back from the snapshot taken as it left. Threads deleted
+  // since then no longer name anything and drop out.
+  const departedByWorldline = new Map<string, string[]>();
+  for (const p of departed) {
+    for (const name of parseNames(p.worldlines)) {
+      const titles = departedByWorldline.get(name) ?? [];
+      titles.push(p.title);
+      departedByWorldline.set(name, titles);
+    }
+  }
+
+  const worldlines = db
+    .getAllWorldlinesWithPapers()
+    .map(wl => ({
+      name: wl.name,
+      titles: [...wl.papers.map(p => p.title), ...(departedByWorldline.get(wl.name) ?? [])].slice(
+        0,
+        MAX_WORLDLINE_TITLES
+      ),
+    }))
+    .filter(wl => wl.titles.length > 0);
+
+  // Ratings are the strongest available signal for taste: T0/T1 are the papers
+  // the user judged genuinely important. A departed paper keeps the tier it
+  // carried out with it.
+  const rated: { tier: number; title: string }[] = [
+    ...papers
+      .filter(p => p.tier !== null && p.tier !== undefined)
+      .map(p => ({ tier: p.tier as number, title: p.title })),
+    ...departed
+      .filter(p => p.tier !== null)
+      .map(p => ({ tier: p.tier as number, title: p.title })),
+  ];
+
+  const topTier = rated
+    .filter(p => p.tier <= 1)
+    .sort((a, b) => a.tier - b.tier)
+    .slice(0, MAX_TOP_TIER_TITLES)
+    .map(p => ({ tier: TIER_NAMES[p.tier] ?? `T${p.tier}`, title: p.title }));
+
+  // "What the user is reading right now" spans both: a paper saved last week and
+  // sent to Scribe yesterday is more current than one saved last year and kept.
+  // getPapers() is ordered by added_at DESC; getDepartedPapers() by first_saved_at DESC.
+  const recentSaves = [
+    ...papers.map(p => ({ at: p.added_at ?? '', title: p.title })),
+    ...departed.map(p => ({ at: p.first_saved_at, title: p.title })),
+  ]
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+    .slice(0, MAX_RECENT_TITLES)
+    .map(p => p.title);
 
   return {
     worldlines,
@@ -144,7 +196,8 @@ export function buildLibraryProfile(): LibraryProfile {
     tags: (db.getTags() as { name: string }[]).map(t => t.name),
     favoriteAuthors: (db.getFavoriteAuthors() as { name: string }[]).map(a => a.name),
     recentSaves,
-    totalSaved: papers.length,
+    totalSaved: papers.length + departed.length,
+    currentlyHeld: papers.length,
   };
 }
 
@@ -156,7 +209,12 @@ export function fingerprintLibraryProfile(profile: LibraryProfile): string {
 function renderLibraryProfile(profile: LibraryProfile): string {
   const sections: string[] = [];
 
-  sections.push(`The library holds ${profile.totalSaved} saved paper(s).`);
+  const departedCount = profile.totalSaved - profile.currentlyHeld;
+  sections.push(
+    departedCount > 0
+      ? `The library holds ${profile.totalSaved} saved paper(s). ${departedCount} of them are no longer stored in the app — they were moved out for systematic study elsewhere, or cleared away. Treat every one of them as a paper this user saved: the judgement stands whether or not the file is still here.`
+      : `The library holds ${profile.totalSaved} saved paper(s).`
+  );
 
   if (profile.worldlines.length > 0) {
     const rendered = profile.worldlines

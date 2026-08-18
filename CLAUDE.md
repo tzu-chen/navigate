@@ -151,7 +151,15 @@ To swap models, change the backend's `version` string in `similarity.ts`; the ve
 
 **Two files:** `services/scout.ts` (library profile, prompt, model call, output normalization) and `routes/scout.ts` (idempotency, persistence, error mapping).
 
-**Flow.** The browse page's ⚡ **Scan listing** button posts the *currently displayed* papers (the active announcement tab, favorites feed, or search page) to `POST /api/scout/scan`. The server builds a **library profile** — worldlines with member titles, T0/T1-rated saves, tags, followed authors, recent saves, library size — renders it into a cached system prompt, and sends the candidates as the user turn. Findings come back as `{arxivId, score (0–100), headline, reason, connections[]}` and are rendered as a highlighted block on the matching paper card, with a "Show only flagged" filter.
+**Flow.** The browse page's ⚡ **Scan listing** button posts the *currently displayed* papers (the active announcement tab, favorites feed, or search page) to `POST /api/scout/scan`. The server builds a **library profile** — worldlines with member titles, T0/T1-rated saves, tags, followed authors, recent saves, library size — from the **ever-saved ledger** rather than only the papers still stored here (see below), renders it into a cached system prompt, and sends the candidates as the user turn. Findings come back as `{arxivId, score (0–100), headline, reason, connections[]}` and are rendered as a highlighted block on the matching paper card, with a "Show only flagged" filter.
+
+**The library profile spans every paper ever saved (`paper_archive`).** Papers leave Navigate — handed to Scribe for systematic study (`POST /api/scribe/send`, which deletes the local row), or simply cleared out. Before this ledger existed the profile was built from live tables alone, so *promoting a paper to deep study made Scout forget it* — precisely inverted, since that is the strongest statement of interest the user can make. Every save now writes a row to `paper_archive` (inside `savePaper`'s transaction, so no save path can skip it), and every deletion snapshots the paper's tier, tag names and worldline names into that row **before** the `paper_tags`/`worldline_papers` cascade destroys them, marking it `removed_at` with a `disposition` of `scribe` or `removed`.
+
+`buildLibraryProfile()` then merges departed papers into every section **uniformly** — a departed paper still appears under its research thread, still carries its T0/T1 rating, and still counts in recent saves and the library size. The disposition is recorded but **not weighted**: a save is a judgement the user made, and deleting the row does not withdraw it. The rendered profile says how many papers are no longer stored locally and instructs the model to treat them the same. `currentlyHeld` sits in the profile alongside `totalSaved`, so it participates in the library fingerprint — sending a paper to Scribe surfaces as `libraryChanged` on a cached run, which is correct: the profile really did change.
+
+Papers deleted *before* the ledger existed are unrecoverable; `initializeDatabase()` backfills it once from the current library (verified: all 521 papers enrolled, with nothing yet sent to Scribe, so no history was actually lost). `GET /api/papers/archive` returns the ledger (`?departed=true` for just the ones that left) with JSON fields parsed and an `inLibrary` flag.
+
+⚠️ The **similarity system still reads live tables only** — a worldline member sent to Scribe drops out of that thread's cohesion and nearest-member scoring. Wiring the ledger into `similarity.ts` would need embeddings for departed papers (their abstracts are kept in `paper_archive`, so it is possible) and is not done.
 
 **No redundant runs (the core constraint).** Every run is stored in `scout_runs`, keyed by `sha256(category | sorted candidate arXiv IDs)` — the identity of *the exact listing triaged*. Pressing the button again while arXiv hasn't announced returns the stored verdict with `cached: true` and **no API call** (it doesn't even need an API key). A new announcement changes the ID set, hence the key, hence a fresh run. Concurrent requests for the same key are coalesced in memory, so a double-click can't become two paid calls. `force: true` (the **Rescan** button) overrides and upserts the row.
 
@@ -178,7 +186,7 @@ Both produce the same validated `ScoutFinding[]`; the backend used is recorded o
 
 **Cost.** Listings are capped at **120 candidates** (`MAX_CANDIDATES`) and abstracts truncated to 1200 chars; the response reports how many were skipped. On the `api` backend the system prompt carries a `cache_control: ephemeral` breakpoint so back-to-back scans on an unchanged library re-read that prefix; the CLI caches the same prefix on its own (observed 1h ephemeral). Per-run token usage and cost are stored and shown in the status bar — prefixed `≈` on the `cli` backend, where the figure is the **list-price equivalent** of work billed to the plan, not money charged to an API account. `GET /api/scout/runs` lists recent runs for spend/finding history.
 
-**Verification:** `npm run verify:scout --prefix server` covers everything that doesn't need a model call — scan-key identity (order-insensitive, set-sensitive), library fingerprinting, the run store's upsert-on-rescan, model-output normalization, and the CLI argument vector — against an isolated temp DB via `SUITE_DATA_ROOT`.
+**Verification:** `npm run verify:scout --prefix server` covers everything that doesn't need a model call — scan-key identity (order-insensitive, set-sensitive), library fingerprinting, the ever-saved ledger (snapshot-before-cascade, departed papers surviving in the profile, re-save restoring a paper without rewriting its first-saved date), the run store's upsert-on-rescan, model-output normalization, and the CLI argument vector — against an isolated temp DB via `SUITE_DATA_ROOT`.
 
 ### Page Trimming (auto-crop)
 
@@ -216,7 +224,7 @@ Two client-side files, no server work beyond one setting:
 
 ### Database Schema (`server/data/papers.db`)
 
-SQLite database created at runtime. 13 tables with cascade deletion:
+SQLite database created at runtime. 14 tables with cascade deletion:
 
 | Table | Key Columns | Constraints |
 | --- | --- | --- |
@@ -233,14 +241,15 @@ SQLite database created at runtime. 13 tables with cascade deletion:
 | `paper_embeddings` | arxiv_id, embedding, model_version, created_at | arxiv_id PRIMARY KEY |
 | `flag_log` | id, arxiv_id, worldline_id, score, runner_up_score, margin, corroboration_kind, category, flagged_at, accepted, decided_at | UNIQUE(arxiv_id, worldline_id), FK→worldlines CASCADE |
 | `scout_runs` | id, cache_key, category, scanned_ids, paper_count, library_fingerprint, model, backend, findings, token counts, estimated_cost, created_at | cache_key UNIQUE (upserted on forced rescan) |
+| `paper_archive` | arxiv_id, title, summary, authors, categories, published, tier, tags, worldlines, first_saved_at, removed_at, disposition | arxiv_id PRIMARY KEY, disposition CHECK ('library','scribe','removed'), **no FK — it outlives the paper row** |
 
-Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `paper_tags.tag_id`, `worldline_papers.worldline_id`, `worldline_papers.paper_id`, `chat_sessions.arxiv_id`, `chat_sessions.worldline_id`, `chat_sessions.session_type`, `paper_embeddings.model_version`, `flag_log.worldline_id`, `flag_log.category`, `flag_log.accepted`, `scout_runs.created_at`.
+Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `paper_tags.tag_id`, `worldline_papers.worldline_id`, `worldline_papers.paper_id`, `chat_sessions.arxiv_id`, `chat_sessions.worldline_id`, `chat_sessions.session_type`, `paper_embeddings.model_version`, `flag_log.worldline_id`, `flag_log.category`, `flag_log.accepted`, `scout_runs.created_at`, `paper_archive.removed_at`.
 
 ### Storage Split
 
 **Important:** The project was originally client-side only, storing everything in localStorage. Most data has since been migrated server-side. Do not introduce new localStorage keys for persistent data — use the server-side settings or database instead.
 
-* **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines, chat sessions + messages, settings (Claude API key, similarity threshold, Scout backend, PDF trim mode), paper embeddings, worldline flag log, Scout runs
+* **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines, chat sessions + messages, settings (Claude API key, similarity threshold, Scout backend, PDF trim mode), paper embeddings, worldline flag log, Scout runs, the ever-saved paper ledger
 * **Client-side (localStorage)**: Only visual preferences that affect rendering before API loads — color scheme and card font size (`paperpile-navigate-visual-prefs`)
 
 ## Key Dependencies
@@ -288,7 +297,7 @@ Targeted verification harnesses live in `server/scripts/` and run against isolat
 ```
 npm run verify:similarity --prefix server   # similarity-core decision logic + flag log
 npm run verify:specter2   --prefix server   # loads the embedding model (the one gate that needs it)
-npm run verify:scout      --prefix server   # Scout scan-key identity, fingerprint, run store, output normalization
+npm run verify:scout      --prefix server   # Scout scan-key identity, fingerprint, ever-saved ledger, run store, output normalization
 npm run verify:autotrim   --prefix server   # margin detection + document-box aggregation (client code, synthetic pages)
 ```
 

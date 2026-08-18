@@ -82,11 +82,13 @@ router.post('/send', async (req: Request, res: Response) => {
         // Upload to Scribe
         await uploadToScribe(pdfBuffer, filename, paper.title, folderId);
 
-        // Delete from Navigate
+        // Delete from Navigate. The paper stays in the ever-saved ledger marked
+        // 'scribe', so Scout still counts it as library context — being promoted
+        // to systematic study is the opposite of losing interest.
         if (paper.pdf_path) {
           deleteLocalPdf(paper.pdf_path);
         }
-        db.deletePaper(paperId);
+        db.deletePaper(paperId, 'scribe');
         sent++;
       } catch (error) {
         const errPaper = db.getPaper(paperId) as SavedPaper | undefined;

@@ -136,6 +136,30 @@ router.get('/comments/all', (_req: Request, res: Response) => {
   }
 });
 
+// GET /api/papers/archive - The ever-saved ledger: every paper ever saved,
+// including ones no longer stored here (handed to Scribe, or cleared out).
+// This is what Scout reads, so it is worth being able to inspect directly.
+// Must be above /:id routes so it isn't captured by the :id param
+router.get('/archive', (req: Request, res: Response) => {
+  try {
+    const departedOnly = req.query.departed === 'true';
+    const rows = departedOnly ? db.getDepartedPapers() : db.getPaperArchive();
+    res.json(
+      rows.map(row => ({
+        ...row,
+        authors: JSON.parse(row.authors || '[]'),
+        categories: JSON.parse(row.categories || '[]'),
+        tags: JSON.parse(row.tags || '[]'),
+        worldlines: JSON.parse(row.worldlines || '[]'),
+        inLibrary: row.removed_at === null,
+      }))
+    );
+  } catch (error) {
+    console.error('Get paper archive error:', error);
+    res.status(500).json({ error: 'Failed to get paper archive' });
+  }
+});
+
 // --- Bulk Operations (must be before /:id routes) ---
 
 // POST /api/papers/bulk/download-pdfs

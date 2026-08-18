@@ -159,6 +159,29 @@ export function initializeDatabase(): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Every paper ever saved, surviving deletion from the papers table.
+    -- A save is a judgement the user made; dropping the papers row only says the
+    -- PDF moved on (to Scribe for systematic study, or out of the way), not that
+    -- the judgement was withdrawn. Scout reads this ledger, so a paper promoted
+    -- to deep study still counts as library context.
+    CREATE TABLE IF NOT EXISTS paper_archive (
+      arxiv_id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      authors TEXT NOT NULL DEFAULT '[]',
+      categories TEXT NOT NULL DEFAULT '[]',
+      published TEXT,
+      -- Snapshot of the paper's standing, written as it leaves the papers table
+      -- (before the cascade takes its tags and worldline memberships with it).
+      tier INTEGER,
+      tags TEXT NOT NULL DEFAULT '[]',
+      worldlines TEXT NOT NULL DEFAULT '[]',
+      first_saved_at TEXT NOT NULL DEFAULT (datetime('now')),
+      removed_at TEXT,
+      disposition TEXT NOT NULL DEFAULT 'library'
+        CHECK(disposition IN ('library', 'scribe', 'removed'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_arxiv_id ON chat_sessions(arxiv_id);
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_worldline_id ON chat_sessions(worldline_id);
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_type ON chat_sessions(session_type);
@@ -168,6 +191,7 @@ export function initializeDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_flag_log_category ON flag_log(category);
     CREATE INDEX IF NOT EXISTS idx_flag_log_accepted ON flag_log(accepted);
     CREATE INDEX IF NOT EXISTS idx_scout_runs_created ON scout_runs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_paper_archive_removed ON paper_archive(removed_at);
   `);
 
   // Migration: add pdf_path column if it doesn't exist
@@ -208,6 +232,17 @@ export function initializeDatabase(): void {
   if (scoutColumns.length > 0 && !scoutColumns.some(c => c.name === 'backend')) {
     db.exec("ALTER TABLE scout_runs ADD COLUMN backend TEXT NOT NULL DEFAULT 'api'");
   }
+
+  // Backfill the ever-saved ledger from the current library. Papers deleted
+  // before the ledger existed are unrecoverable, but everything still held is
+  // enrolled here once, so nothing is lost from this point on.
+  db.exec(`
+    INSERT OR IGNORE INTO paper_archive
+      (arxiv_id, title, summary, authors, categories, published, tier, first_saved_at, disposition)
+    SELECT arxiv_id, title, summary, authors, categories, published, tier,
+           COALESCE(added_at, datetime('now')), 'library'
+    FROM papers
+  `);
 }
 
 // Paper operations
@@ -234,7 +269,29 @@ export function savePaper(paper: {
       updated = excluded.updated,
       categories = excluded.categories
   `);
-  return stmt.run(paper);
+
+  // Enrol in the ever-saved ledger in the same transaction, so no save path can
+  // add a paper without recording that it was once saved. A paper that had left
+  // and is being saved again returns to 'library' but keeps its original
+  // first_saved_at — the ledger tracks when the user first judged it worth having.
+  const archive = db.prepare(`
+    INSERT INTO paper_archive (arxiv_id, title, summary, authors, categories, published, disposition, removed_at)
+    VALUES (@arxiv_id, @title, @summary, @authors, @categories, @published, 'library', NULL)
+    ON CONFLICT(arxiv_id) DO UPDATE SET
+      title = excluded.title,
+      summary = excluded.summary,
+      authors = excluded.authors,
+      categories = excluded.categories,
+      published = excluded.published,
+      disposition = 'library',
+      removed_at = NULL
+  `);
+
+  return db.transaction(() => {
+    const result = stmt.run(paper);
+    archive.run(paper);
+    return result;
+  })();
 }
 
 export function getPapers(options?: { tag_id?: number; tier?: number | 'ungraded' }) {
@@ -277,8 +334,115 @@ export function bulkUpdateTier(paperIds: number[], tier: number | null) {
   return db.prepare(`UPDATE papers SET tier = ? WHERE id IN (${placeholders})`).run(tier, ...paperIds);
 }
 
-export function deletePaper(id: number) {
-  return db.prepare('DELETE FROM papers WHERE id = ?').run(id);
+/**
+ * Why a paper left the library. Recorded for the record — Scout weighs every
+ * ever-saved paper the same regardless of how it left — but a paper handed to
+ * Scribe for systematic study is a different event from one cleared out, and
+ * the distinction is free to keep and impossible to reconstruct later.
+ */
+export type ArchiveDisposition = 'scribe' | 'removed';
+
+export interface ArchivedPaper {
+  arxiv_id: string;
+  title: string;
+  summary: string;
+  authors: string;
+  categories: string;
+  published: string | null;
+  tier: number | null;
+  /** JSON array of tag names, as of removal. */
+  tags: string;
+  /** JSON array of worldline names, as of removal. */
+  worldlines: string;
+  first_saved_at: string;
+  removed_at: string | null;
+  disposition: 'library' | ArchiveDisposition;
+}
+
+/**
+ * Snapshot papers into the ledger on their way out. Must run *before* the
+ * DELETE and inside the same transaction: `paper_tags` and `worldline_papers`
+ * cascade away with the row, so this is the last moment the paper's tags,
+ * worldline memberships and tier can be read.
+ */
+function archiveForRemoval(paperIds: number[], disposition: ArchiveDisposition): void {
+  if (paperIds.length === 0) return;
+
+  const paperStmt = db.prepare('SELECT * FROM papers WHERE id = ?');
+  const tagStmt = db.prepare(
+    'SELECT t.name FROM tags t JOIN paper_tags pt ON t.id = pt.tag_id WHERE pt.paper_id = ? ORDER BY t.name'
+  );
+  const worldlineStmt = db.prepare(
+    'SELECT w.name FROM worldlines w JOIN worldline_papers wp ON w.id = wp.worldline_id WHERE wp.paper_id = ? ORDER BY w.name'
+  );
+  const archiveStmt = db.prepare(`
+    INSERT INTO paper_archive
+      (arxiv_id, title, summary, authors, categories, published, tier, tags, worldlines,
+       first_saved_at, removed_at, disposition)
+    VALUES
+      (@arxiv_id, @title, @summary, @authors, @categories, @published, @tier, @tags, @worldlines,
+       @first_saved_at, datetime('now'), @disposition)
+    ON CONFLICT(arxiv_id) DO UPDATE SET
+      title = excluded.title,
+      summary = excluded.summary,
+      authors = excluded.authors,
+      categories = excluded.categories,
+      published = excluded.published,
+      tier = excluded.tier,
+      tags = excluded.tags,
+      worldlines = excluded.worldlines,
+      removed_at = excluded.removed_at,
+      disposition = excluded.disposition
+  `);
+
+  for (const id of paperIds) {
+    const paper = paperStmt.get(id) as {
+      arxiv_id: string;
+      title: string;
+      summary: string;
+      authors: string;
+      categories: string;
+      published: string | null;
+      tier: number | null;
+      added_at: string | null;
+    } | undefined;
+    if (!paper) continue;
+
+    archiveStmt.run({
+      arxiv_id: paper.arxiv_id,
+      title: paper.title,
+      summary: paper.summary,
+      authors: paper.authors,
+      categories: paper.categories,
+      published: paper.published,
+      tier: paper.tier,
+      tags: JSON.stringify((tagStmt.all(id) as { name: string }[]).map(t => t.name)),
+      worldlines: JSON.stringify((worldlineStmt.all(id) as { name: string }[]).map(w => w.name)),
+      first_saved_at: paper.added_at ?? new Date().toISOString(),
+      disposition,
+    });
+  }
+}
+
+export function deletePaper(id: number, disposition: ArchiveDisposition = 'removed') {
+  return db.transaction(() => {
+    archiveForRemoval([id], disposition);
+    return db.prepare('DELETE FROM papers WHERE id = ?').run(id);
+  })();
+}
+
+/** Papers that were saved and are no longer in `papers`, most recently saved first. */
+export function getDepartedPapers(): ArchivedPaper[] {
+  return db
+    .prepare('SELECT * FROM paper_archive WHERE removed_at IS NOT NULL ORDER BY first_saved_at DESC')
+    .all() as ArchivedPaper[];
+}
+
+/** The whole ever-saved ledger, held and departed alike. */
+export function getPaperArchive(): ArchivedPaper[] {
+  return db
+    .prepare('SELECT * FROM paper_archive ORDER BY first_saved_at DESC')
+    .all() as ArchivedPaper[];
 }
 
 // Comment operations
@@ -695,10 +859,13 @@ export function getPapersByIds(paperIds: number[]) {
   return db.prepare(`SELECT * FROM papers WHERE id IN (${placeholders})`).all(...paperIds);
 }
 
-export function bulkDeletePapers(paperIds: number[]) {
+export function bulkDeletePapers(paperIds: number[], disposition: ArchiveDisposition = 'removed') {
   if (paperIds.length === 0) return { changes: 0 };
   const placeholders = paperIds.map(() => '?').join(',');
-  return db.prepare(`DELETE FROM papers WHERE id IN (${placeholders})`).run(...paperIds);
+  return db.transaction(() => {
+    archiveForRemoval(paperIds, disposition);
+    return db.prepare(`DELETE FROM papers WHERE id IN (${placeholders})`).run(...paperIds);
+  })();
 }
 
 export function bulkAddPaperTag(paperIds: number[], tagId: number) {
