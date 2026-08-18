@@ -9,6 +9,7 @@
     "verify:similarity": "tsx scripts/verify-similarity.ts",
     "verify:specter2": "tsx scripts/verify-specter2.ts",
     "verify:scout": "tsx scripts/verify-scout.ts",
+    "verify:autotrim": "tsx scripts/verify-autotrim.ts",
     "diagnose": "tsx scripts/diagnose-worldlines.ts"
   },
   "dependencies": {

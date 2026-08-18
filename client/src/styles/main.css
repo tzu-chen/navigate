@@ -1726,6 +1726,92 @@ input[type="color"] {
   padding: 8px 0;
 }
 
+/* Margin trimming. The page inside renders at full size and is positioned by a
+   negative offset; this box is the window onto its content, so nothing about
+   pdf.js's geometry (text layer, link annotations, comment rects) changes. */
+.pdf-page-crop {
+  position: relative;
+  /* `clip` rather than `hidden` so this never becomes a scroll container: a
+     hidden one can be scrolled programmatically (by a focus or a selection
+     drag near the edge), which would slide the trimmed page inside its box. */
+  overflow: hidden;
+  overflow: clip;
+  box-shadow: var(--shadow-lg);
+}
+
+.pdf-page-crop-inner {
+  position: absolute;
+}
+
+/* The page's own shadow would be drawn on edges this box clips away. */
+.pdf-page-crop .react-pdf__Page {
+  box-shadow: none;
+}
+
+.pdf-dark-theme .pdf-page-crop {
+  box-shadow: none;
+}
+
+.pdf-trim-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pdf-trim-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pdf-trim-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 240px;
+  padding: 4px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+}
+
+.pdf-trim-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pdf-trim-menu-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.pdf-trim-menu-item-active {
+  color: var(--accent);
+}
+
+.pdf-trim-menu-check {
+  flex: 0 0 12px;
+  color: var(--accent);
+}
+
+.pdf-trim-menu-hint {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 /* Container sized to match the rendered page; horizontally centered like the
    Page itself. Annotation marks inside use percentage-based positions, so they
    scale with zoom and re-align after fit-to-width changes. */

@@ -1,11 +1,14 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
 import Icon from './Icon';
 import { useKeyboardShortcut } from '../hooks/useKeyboardShortcut';
-import { Comment, CommentPositionRect } from '../types';
+import { useAutoTrim } from '../hooks/useAutoTrim';
+import { TrimDocument } from '../utils/autoTrim';
+import * as api from '../services/api';
+import { Comment, CommentPositionRect, TrimMode } from '../types';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -75,6 +78,13 @@ const MOBILE_PDF_SIZE_LIMIT = 12 * 1024 * 1024;
 // window), which is how opening a paper used to mount a canvas for every page
 // in the document at once. A count cannot degenerate that way.
 const BUFFER = isMobile ? 1 : 2;
+
+// Trim-view menu, modelled on Okular's View → Trim View: the modes are
+// alternatives picked from one menu, and re-picking the active one turns it off.
+const TRIM_OPTIONS: { mode: Exclude<TrimMode, 'off'>; label: string; hint: string }[] = [
+  { mode: 'uniform', label: 'Trim margins', hint: 'one box for the whole paper' },
+  { mode: 'page', label: 'Trim margins (per page)', hint: 'each page to its own content' },
+];
 
 // PDF.js's text layer is one <span> per text item, so a Range across multiple
 // lines emits many client rects that often stack on the same visual line.
@@ -175,10 +185,25 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
   const selectionPopupRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pdfDocRef = useRef<any>(null);
+  // The same document as pdfDocRef, held in state because the auto-trim hook has
+  // to start measuring when it arrives (a ref change wakes nothing).
+  const [trimDoc, setTrimDoc] = useState<TrimDocument | null>(null);
   const hasInitialScale = useRef(false);
   const pageWidthRef = useRef(0);
   const lastContainerWidthRef = useRef(0);
   const pageHeightRef = useRef(0);
+  // Fraction of the page width that survives trimming. Fit-to-width divides by
+  // it, so trimmed pages fill the viewer rather than leaving the reclaimed
+  // margin as empty gutter — the point of trimming in the first place.
+  const horizFracRef = useRef(1);
+  // Automatic margin trimming, modelled on Okular's View → Trim View (and on
+  // Scribe's port of it). Persisted globally, so it survives paper switches.
+  const [trimMode, setTrimMode] = useState<TrimMode>('off');
+  const [trimMenuOpen, setTrimMenuOpen] = useState(false);
+  const trimMenuRef = useRef<HTMLDivElement>(null);
+  // Set when the reader changes the trim mode, so the next refit knows to put
+  // them back on the page they were reading.
+  const restoreOnRefitRef = useRef(false);
 
   const updateCurrentPage = useCallback((page: number) => {
     if (page !== currentPageRef.current) {
@@ -197,6 +222,8 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     pageWidthRef.current = 0;
     pageHeightRef.current = 0;
     pdfDocRef.current = null;
+    setTrimDoc(null);
+    horizFracRef.current = 1;
     setNumPages(0);
     setOutline([]);
     setVisibleRange({ start: 1, end: 1 + BUFFER * 2 });
@@ -231,6 +258,16 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     };
   }, [pdfUrl]);
 
+  // Scale that makes the *visible* (post-trim) page span fill the container.
+  const fitToWidth = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || pageWidthRef.current <= 0) return;
+    // Account for padding/scrollbar in the container
+    const containerWidth = container.clientWidth - 20;
+    if (containerWidth <= 0) return;
+    setScale(containerWidth / (pageWidthRef.current * horizFracRef.current));
+  }, []);
+
   // Re-fit PDF to width on container resize (e.g. orientation change on mobile)
   useEffect(() => {
     const container = containerRef.current;
@@ -242,16 +279,13 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
       // Only refit when width change is significant (>50px) to filter out scrollbar jitter
       if (Math.abs(currentWidth - lastContainerWidthRef.current) > 50) {
         lastContainerWidthRef.current = currentWidth;
-        const containerWidth = currentWidth - 20;
-        if (containerWidth > 0) {
-          setScale(containerWidth / pageWidthRef.current);
-        }
+        fitToWidth();
       }
     });
 
     resizeObserver.observe(container);
     return () => resizeObserver.disconnect();
-  }, []);
+  }, [fitToWidth]);
 
   // Track pinch-zoom level via the visual viewport and re-render canvases at
   // a higher DPR when the user zooms in. Debounced so we don't re-rasterize
@@ -335,7 +369,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
       { root: container, threshold: 0.1, rootMargin: '100px 0px' },
     );
 
-    container.querySelectorAll('[data-page-number]').forEach(el => observer.observe(el));
+    container.querySelectorAll('.pdf-page-wrapper[data-page-number]').forEach(el => observer.observe(el));
 
     return () => {
       if (rafId !== null) cancelAnimationFrame(rafId);
@@ -363,7 +397,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
       const { start, end } = visibleRangeRef.current;
       let current = start;
       for (let p = start; p <= end; p++) {
-        const el = container.querySelector(`[data-page-number="${p}"]`);
+        const el = container.querySelector(`.pdf-page-wrapper[data-page-number="${p}"]`);
         if (!el) continue;
         if (el.getBoundingClientRect().top <= containerTop + 50) current = p;
       }
@@ -385,6 +419,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function onDocumentLoadSuccess(pdf: any) {
     pdfDocRef.current = pdf;
+    setTrimDoc(pdf as TrimDocument);
     setError(false);
 
     // Resolve page-1 dimensions BEFORE publishing numPages. Wrappers size their
@@ -402,12 +437,8 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
         pageHeightRef.current = viewport.height;
         const container = containerRef.current;
         if (container) {
-          // Account for padding/scrollbar in the container
-          const containerWidth = container.clientWidth - 20;
           lastContainerWidthRef.current = container.clientWidth;
-          if (viewport.width > 0 && containerWidth > 0) {
-            setScale(containerWidth / viewport.width);
-          }
+          if (viewport.width > 0) fitToWidth();
         }
       } catch {
         // Keep default scale on error
@@ -442,12 +473,12 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     setError(true);
   }
 
-  const scrollToPage = useCallback((page: number) => {
+  const scrollToPage = useCallback((page: number, behavior: ScrollBehavior = 'smooth') => {
     const container = containerRef.current;
     if (!container) return;
-    const el = container.querySelector(`[data-page-number="${page}"]`);
+    const el = container.querySelector(`.pdf-page-wrapper[data-page-number="${page}"]`);
     if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      el.scrollIntoView({ behavior, block: 'start' });
     }
   }, []);
 
@@ -457,6 +488,83 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
     updateCurrentPage(clamped);
     scrollToPage(clamped);
   }, [numPages, updateCurrentPage, scrollToPage]);
+
+  // Restore the persisted trim mode once per mount. It is a global preference,
+  // not a per-paper one, so this doesn't re-run when the PDF changes.
+  useEffect(() => {
+    let cancelled = false;
+    api.getTrimMode().then(mode => {
+      if (!cancelled) setTrimMode(mode);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const trim = useAutoTrim({
+    mode: trimMode,
+    pdfDoc: trimDoc ?? undefined,
+    numPages,
+    currentPage,
+  });
+
+  const { cropForPage } = trim;
+
+  // Fit-to-width follows the document-wide box, never a per-page one: in `page`
+  // mode the zoom level would otherwise jitter as each page's own measurement
+  // landed while scrolling.
+  const horizFrac = trimMode === 'off'
+    ? 1
+    : Math.max(0.2, 1 - trim.uniform.left - trim.uniform.right);
+
+  // Refit when the trim box changes — switching trimming on or off changes how
+  // wide a page renders. This deliberately overrides a manual zoom, the same way
+  // a container resize already does: the user just asked for a different page
+  // width. Layout effect, so the trimmed geometry and the scale that suits it
+  // reach the screen in the same paint instead of flashing the intermediate.
+  useLayoutEffect(() => {
+    if (Math.abs(horizFrac - horizFracRef.current) < 0.002) return;
+    horizFracRef.current = horizFrac;
+    fitToWidth();
+    // Page geometry just moved under the reader, so put them back on the page
+    // they were on. Only for a trim change they asked for: in `page` mode the
+    // document box also loosens on its own as wider pages get measured, and
+    // yanking the view back on each of those would be worse than leaving it.
+    if (restoreOnRefitRef.current) {
+      restoreOnRefitRef.current = false;
+      const page = currentPageRef.current;
+      requestAnimationFrame(() => scrollToPage(page, 'auto'));
+    }
+  }, [horizFrac, fitToWidth, scrollToPage]);
+
+  // Picking the active mode again switches trimming off, the way a checkable
+  // menu item behaves. `next` is computed outside the state updater because the
+  // persist call is a side effect and StrictMode invokes updaters twice.
+  const selectTrimMode = useCallback((mode: TrimMode) => {
+    const next: TrimMode = trimMode === mode ? 'off' : mode;
+    setTrimMenuOpen(false);
+    setTrimMode(next);
+    restoreOnRefitRef.current = true;
+    api.saveTrimMode(next).catch(() => {});
+  }, [trimMode]);
+
+  // Dismiss the trim menu on Escape or a click outside it.
+  useEffect(() => {
+    if (!trimMenuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (trimMenuRef.current?.contains(e.target as Node)) return;
+      setTrimMenuOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setTrimMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [trimMenuOpen]);
 
   // Capture text selections inside the PDF and forward to the parent. Only emit
   // on non-empty selections — clearing the selection (e.g., focusing the
@@ -476,7 +584,7 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
         const anchor = sel.anchorNode;
         if (!anchor || !container.contains(anchor)) return;
         const el = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : (anchor as Element);
-        const pageEl = el?.closest('[data-page-number]');
+        const pageEl = el?.closest('.pdf-page-wrapper[data-page-number]');
         const pageNum = pageEl ? Number(pageEl.getAttribute('data-page-number')) : NaN;
         if (!pageEl || isNaN(pageNum)) return;
 
@@ -485,8 +593,17 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
         // visual fragment (typically one per line of the selection).
         const range = sel.getRangeAt(0);
         const clientRects = range.getClientRects();
-        const pageWrappers = container.querySelectorAll('[data-page-number]');
-        const pageRectCache = new Map<number, DOMRect>();
+        // Scoped to the wrappers: react-pdf puts a data-page-number on its own
+        // page div too, and a trimmed one overhangs its clipping box, so a loose
+        // selector would let page N's element claim page N+1's content.
+        const pageWrappers = container.querySelectorAll('.pdf-page-wrapper[data-page-number]');
+        // Two rects per page: `clip` is what the reader can see (the trimmed
+        // box, or the whole page when trimming is off) and decides which page a
+        // selection rect belongs to; `page` is the full page and normalizes the
+        // coordinates. Attributing by the full rect would misfile selections
+        // once trimming is on, because a cropped page's element still overhangs
+        // its visible box and can cover its neighbour's content.
+        const pageRectCache = new Map<number, { clip: DOMRect; page: DOMRect }>();
         const rects: CommentPositionRect[] = [];
         for (let i = 0; i < clientRects.length; i++) {
           const cr = clientRects[i];
@@ -497,15 +614,20 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
           let matchedRect: DOMRect | null = null;
           for (const wrapper of pageWrappers) {
             const p = Number(wrapper.getAttribute('data-page-number'));
-            let pr = pageRectCache.get(p);
-            if (!pr) {
+            let cached = pageRectCache.get(p);
+            if (!cached) {
               const pageDiv = wrapper.querySelector('.react-pdf__Page') || wrapper;
-              pr = (pageDiv as Element).getBoundingClientRect();
-              pageRectCache.set(p, pr);
+              const clipDiv = wrapper.querySelector('.pdf-page-crop') || pageDiv;
+              cached = {
+                clip: (clipDiv as Element).getBoundingClientRect(),
+                page: (pageDiv as Element).getBoundingClientRect(),
+              };
+              pageRectCache.set(p, cached);
             }
-            if (cx >= pr.left && cx <= pr.right && cy >= pr.top && cy <= pr.bottom) {
+            const clip = cached.clip;
+            if (cx >= clip.left && cx <= clip.right && cy >= clip.top && cy <= clip.bottom) {
               matchedPage = p;
-              matchedRect = pr;
+              matchedRect = cached.page;
               break;
             }
           }
@@ -858,6 +980,51 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
           <button className="pdf-nav-btn" onClick={zoomIn} title="Zoom in">
             &#43;
           </button>
+          <div className="pdf-trim-control" ref={trimMenuRef}>
+            <button
+              className={`pdf-nav-btn ${trimMode !== 'off' ? 'pdf-nav-btn-active' : ''}`}
+              onClick={() => setTrimMenuOpen(o => !o)}
+              title={
+                trimMode === 'uniform' ? 'Trim view (margins trimmed)'
+                  : trimMode === 'page' ? 'Trim view (margins trimmed per page)'
+                    : 'Trim view — hide page margins'
+              }
+            >
+              <Icon name="crop" />
+            </button>
+            {trim.measuring && <span className="pdf-trim-status">measuring…</span>}
+            {trimMenuOpen && (
+              <div className="pdf-trim-menu" role="menu">
+                {TRIM_OPTIONS.map(option => (
+                  <button
+                    key={option.mode}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={trimMode === option.mode}
+                    className={`pdf-trim-menu-item ${trimMode === option.mode ? 'pdf-trim-menu-item-active' : ''}`}
+                    onClick={() => selectTrimMode(option.mode)}
+                  >
+                    <span className="pdf-trim-menu-check">{trimMode === option.mode ? '✓' : ''}</span>
+                    <span>
+                      {option.label}
+                      <span className="pdf-trim-menu-hint">{option.hint}</span>
+                    </span>
+                  </button>
+                ))}
+                {trimMode !== 'off' && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="pdf-trim-menu-item"
+                    onClick={() => selectTrimMode(trimMode)}
+                  >
+                    <span className="pdf-trim-menu-check" />
+                    <span>No trim</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="pdf-toolbar-group">
@@ -992,32 +1159,67 @@ export default function PDFViewer({ pdfUrl, onPageChange, immersiveMode, onToggl
               const pageAnnotations = annotationsByPage.get(pageNum);
               const pageW = pageWidthRef.current > 0 ? pageWidthRef.current * scale : 0;
               const pageH = pageHeightRef.current > 0 ? pageHeightRef.current * scale : 0;
+              // Trimming hides margins by clipping: the page renders whole (so
+              // pdf.js, the text layer, and every stored comment rect keep their
+              // full-page geometry) inside a smaller box that shows only the
+              // content. Placeholders for off-screen pages shrink to match, or
+              // scrolling would jump when a page mounted.
+              // Guarded on known dimensions: a crop against a zero-sized page
+              // would collapse the clipping box and hide the page outright.
+              const crop = pageW > 0 && pageH > 0 ? cropForPage(pageNum) : undefined;
+              const cropL = crop?.left ?? 0;
+              const cropT = crop?.top ?? 0;
+              const clipW = crop ? Math.floor(pageW * (1 - cropL - crop.right)) : pageW;
+              const clipH = crop ? Math.floor(pageH * (1 - cropT - crop.bottom)) : pageH;
+              const pageEl = isVisible ? (
+                <Page
+                  pageNumber={pageNum}
+                  scale={scale}
+                  devicePixelRatio={effectivePixelRatio}
+                  loading=""
+                  error={
+                    <div className="pdf-page-error">
+                      <p>Page {pageNum} failed to render</p>
+                    </div>
+                  }
+                />
+              ) : null;
               return (
                 <div
                   key={pageNum}
                   data-page-number={pageNum}
                   className="pdf-page-wrapper"
                   style={!isVisible && pageHeightRef.current > 0
-                    ? { height: `${pageH}px`, minHeight: `${pageH}px` }
+                    ? { height: `${clipH}px`, minHeight: `${clipH}px` }
                     : undefined}
                 >
                   {isVisible ? (
-                    <Page
-                      pageNumber={pageNum}
-                      scale={scale}
-                      devicePixelRatio={effectivePixelRatio}
-                      loading=""
-                      error={
-                        <div className="pdf-page-error">
-                          <p>Page {pageNum} failed to render</p>
+                    crop ? (
+                      <div className="pdf-page-crop" style={{ width: clipW, height: clipH }}>
+                        <div
+                          className="pdf-page-crop-inner"
+                          style={{ left: -Math.floor(cropL * pageW), top: -Math.floor(cropT * pageH) }}
+                        >
+                          {pageEl}
                         </div>
-                      }
-                    />
+                      </div>
+                    ) : pageEl
                   ) : null}
                   {isVisible && pageAnnotations && pageAnnotations.length > 0 && pageW > 0 && pageH > 0 && (
                     <div
                       className="pdf-page-comment-overlay"
-                      style={{ width: pageW, height: pageH }}
+                      style={{
+                        width: pageW,
+                        height: pageH,
+                        // Stay pinned to the full page's frame, which trimming
+                        // has shifted up and (unless the side margins are equal)
+                        // sideways. Kept outside the clipping box so a tooltip
+                        // on the first line can still overflow above the page.
+                        ...(crop ? {
+                          marginTop: -Math.floor(cropT * pageH),
+                          marginLeft: Math.round((crop.right - cropL) * pageW / 2),
+                        } : undefined),
+                      }}
                     >
                       {pageAnnotations.map(group => {
                         const isPinned = pinnedCommentId === group.comment.id;

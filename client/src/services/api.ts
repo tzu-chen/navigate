@@ -1,4 +1,4 @@
-import { ArxivPaper, SavedPaper, Comment, CommentWithPaper, Tag, CategoryGroup, FavoriteAuthor, ChatMessage, ChatSession, WorldlineChatSession, Worldline, PaperSimilarityResult, ScoutScanResult } from '../types';
+import { ArxivPaper, SavedPaper, Comment, CommentWithPaper, Tag, CategoryGroup, FavoriteAuthor, ChatMessage, ChatSession, WorldlineChatSession, Worldline, PaperSimilarityResult, ScoutScanResult, TrimMode } from '../types';
 import {
   coerceSchemeId,
   DEFAULT_SCHEME_ID,
@@ -602,7 +602,7 @@ export async function scanWithScout(
 }
 
 // Settings
-// Server-side: claudeApiKey, similarityThreshold, favoriteCategories
+// Server-side: claudeApiKey, similarityThreshold, favoriteCategories, pdfTrimMode
 // Client-side (localStorage): colorScheme, cardFontSize, autoSwitch (visual preferences)
 const VISUAL_PREFS_KEY = 'navigate-visual-prefs';
 
@@ -745,6 +745,27 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
 // Synchronous getter for visual prefs only (used during initial render)
 export function getVisualPrefsSync(): VisualPrefs {
   return getVisualPrefs();
+}
+
+// PDF margin trimming. Stored server-side and globally rather than per paper:
+// arXiv PDFs are homogeneous typeset output, so a reader who wants margins gone
+// wants them gone in every paper, and a per-paper box would just be re-measured
+// to the same answer each time.
+export async function getTrimMode(): Promise<TrimMode> {
+  try {
+    const settings = await request<Record<string, string>>('/settings');
+    const mode = settings.pdfTrimMode;
+    return mode === 'uniform' || mode === 'page' ? mode : 'off';
+  } catch {
+    return 'off';
+  }
+}
+
+export async function saveTrimMode(mode: TrimMode): Promise<void> {
+  await request('/settings/pdfTrimMode', {
+    method: 'PUT',
+    body: JSON.stringify({ value: mode }),
+  });
 }
 
 export function applyCardFontSize(size: number): void {

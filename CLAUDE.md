@@ -57,7 +57,7 @@ paperpile-navigate/
   + `Library` — Saved papers list with tag/worldline/tier filters, multi-select bulk operations, unified import panel, and selection-driven export
   + `ImportPanel` — Tabbed panel combining ArXiv ID batch import, BibTeX import, and PDF upload
   + `PaperViewer` — Main reader: PDFViewer on left, tabbed sidebar (chat, comments, tags, export, info, worldline, import) on right. Supports immersive mode and browse-context navigation.
-  + `PDFViewer` — react-pdf integration with page controls, search, annotations
+  + `PDFViewer` — react-pdf integration with page controls, search, annotations, and the trim-view menu (see Page Trimming below)
   + `ChatPanel` — Conversation UI with markdown rendering and token usage display
   + `ChatHistory` — Lists all chat sessions per paper
   + `CommentPanel` — Per-page annotations with edit/delete
@@ -72,7 +72,8 @@ paperpile-navigate/
   + `ArxivRefreshTimer` — Countdown to next ArXiv announcement
   + `LaTeX` — MathJax wrapper component
 * **services/api.ts** — Centralized API client (~630 lines). All backend calls go through a `request<T>()` helper with automatic JSON serialization. Includes functions for chat sessions, settings, and visual preference helpers (localStorage for color scheme and font size only).
-* **types.ts** — Shared TypeScript interfaces (`ArxivPaper`, `SavedPaper`, `ChatSession`, `Tag`, `Worldline`, etc.). Note: `authors` and `categories` are JSON strings in `SavedPaper` (parsed in routes). Defines `ARXIV_CATEGORY_GROUPS` constant with 14 groups and 140+ subcategories.
+* **types.ts** — Shared TypeScript interfaces (`ArxivPaper`, `SavedPaper`, `ChatSession`, `Tag`, `Worldline`, `CropBox`/`TrimMode`, etc.). Note: `authors` and `categories` are JSON strings in `SavedPaper` (parsed in routes). Defines `ARXIV_CATEGORY_GROUPS` constant with 14 groups and 140+ subcategories.
+* **utils/autoTrim.ts**, **hooks/useAutoTrim.ts** — margin detection and the measuring loop behind page trimming (see Page Trimming below).
 * **colorSchemes.ts** — 8 theme definitions (default-dark, solarized-dark/light, nord-dark/light, dracula-dark/light, one-dark-pro) applied via CSS custom properties.
 
 ### Server (`server/src/`)
@@ -179,6 +180,40 @@ Both produce the same validated `ScoutFinding[]`; the backend used is recorded o
 
 **Verification:** `npm run verify:scout --prefix server` covers everything that doesn't need a model call — scan-key identity (order-insensitive, set-sensitive), library fingerprinting, the run store's upsert-on-rescan, model-output normalization, and the CLI argument vector — against an isolated temp DB via `SUITE_DATA_ROOT`.
 
+### Page Trimming (auto-crop)
+
+**Hides a PDF's margins so the text fills the viewer.** Ported from Scribe's Trim View (itself modelled on Okular's `View → Trim View`), and tuned for papers rather than scanned books. Measured over this library, trimming keeps ~70% of the page area, which is ~1.25× wider text at the same window size.
+
+Two client-side files, no server work beyond one setting:
+
+* `client/src/utils/autoTrim.ts` — the detector. Pure and pdf.js-free apart from two structural interfaces (`TrimDocument`/`TrimPage`), so it isn't pinned to the pdfjs-dist version react-pdf owns transitively. A page is rendered at 320px wide onto an off-screen canvas, background luminance is estimated from the border ring, and the ink bounding box is taken with a 1-pass erosion plus a row/column ink gate so margin specks can't defeat it. Pages that measure untrustworthy (blank, a lone page number, <15% content) return `null` and are skipped rather than trusted. Boxes are `CropBox` fractions in viewer space and are in-memory only.
+* `client/src/hooks/useAutoTrim.ts` — the measuring loop: a queue pumped between `requestIdleCallback`s (measuring competes with the viewer's own rendering), a per-document cache, and a generation counter so a document swap abandons in-flight results.
+
+**Modes** (`TrimMode`, chosen from the toolbar's ⧉ crop menu; re-picking the active one turns trimming off):
+
+* **`uniform`** — one box for the whole document. It measures **every page** (capped at `MAX_UNIFORM_PAGES` = 400, above which it falls back to a spread sample) and applies **nothing until the sweep completes** — the toolbar shows "measuring…" meanwhile. This is required, not conservative: the box is the *smallest* margin found, so a partial sweep would be tighter than the document allows and would clip. `uniformComplete` is derived from the attempt count, so a sweep interrupted by switching trimming off resumes and is never applied half-done.
+* **`page`** — Okular's literal behaviour: each page trimmed to its own box, measured lazily in a window around the reading position (with an 8-page spread as the backing sample). Pages then differ in size. Useful for the occasional scanned submission whose content wanders, and for a paper where one full-bleed page spoils the uniform box.
+
+**Two deliberate departures from Scribe** (both in `aggregateCrops`, with the reasoning in the code):
+
+1. **No per-parity box.** Scribe keeps separate odd/even boxes because a bound book alternates its gutter. arXiv PDFs are single-sided, so one box is correct — and it keeps every page the same size, which is what lets the viewer size off-screen page placeholders from a single page height.
+2. **A plain minimum, not the minimum of the *typical* pages.** Scribe discards pages whose margin is under half the median so a full-bleed illustration can't reopen the crop for a whole book. On papers that filter only over-trims, because the pages it calls atypical are wide figures, tables and display equations — content, not decoration. Measured over 25 papers from this library (every page of each): the filter clipped content on 3 of them, up to 4.7% of the page width, while trimming no more on average than the plain minimum (70.0% vs 70.4% of page area kept). The minimum also carries a guarantee worth having — **no measured page has its content clipped** — at the cost that a genuinely full-bleed page disables trimming on that side (use `page` mode there).
+
+**Marginal stamps are not content (`skipMarginBand`).** arXiv prints the paper's ID down the left margin of every preprint's first page, in rotated ~9pt type outside the text block. To a plain bounding box that is ink like any other — and since the document box is the *smallest* margin on any page, that one page reopened the left margin for the whole paper. This was the cause of the wide left gutter trimming used to leave. The stamp is discarded by shape rather than by page number, so the same rule catches line numbers on a review copy or a journal's submission stamp, on either side: the outermost run of inked columns is skipped only when it is **thin** (≤6% of the page), **ends within 15% of the page edge**, is **separated from the body by ≥0.6% blank page**, and is **≥8× taller than it is wide**. Content that reaches the margin (a wide figure, a full-bleed table) fails all of those and still opens the box up as before. The four bounds are fitted to the 219 stamped first pages in this library, measured from their text layers with `pdftotext -bbox` — thickness p50 0.029/max 0.037, reach max 0.075, gap min 0.008/p05 0.028, aspect min 18 — each set clear of the observed worst case, with the most slack on thickness because a rendered stamp is a block or two fatter than its glyph boxes once antialiased. Rows are then counted across the surviving columns only, since the banner routinely overhangs the text block vertically and would otherwise pin the top and bottom too.
+
+**How the crop is applied.** The page renders whole inside a smaller `.pdf-page-crop` box (`overflow: clip`) with a negative offset, so pdf.js's geometry, the text layer, link annotations and every stored comment rect keep their full-page coordinates — nothing about trimming touches persisted data. Consequences handled in `PDFViewer`:
+
+* **Fit-to-width** divides by the surviving width fraction, so trimming actually buys reading size instead of leaving empty gutter. It always uses the document-wide box, even in `page` mode, or the zoom would jitter as per-page measurements landed. The refit runs in a `useLayoutEffect` (same paint, no flash) and re-scrolls to the current page, since the geometry moved under the reader.
+* **Off-screen page placeholders** shrink to the trimmed height, or scrolling would jump as pages mounted.
+* **Text-selection page attribution** tests the *visible* box, not the page element: a trimmed page's element still overhangs its clip box and would otherwise claim its neighbour's selections.
+* **The comment overlay** stays outside the clipping box, offset onto the full page's frame, so a tooltip anchored to the first line can still overflow above the page.
+
+**Persistence.** The mode lives in the `settings` table as `pdfTrimMode` — server-side and **global**, not per paper: arXiv PDFs are homogeneous, so a reader who wants margins gone wants them gone everywhere, and a per-paper box would be re-measured to the same answer each time.
+
+**Not ported:** Scribe's manual crop overlay (drag-the-edges) and its export-with-crop, which needs `pdf-lib`. Navigate hands PDFs to Scribe for that.
+
+**Verification:** `npm run verify:autotrim --prefix server` runs the detector and the aggregation over synthetic pages — no pdf.js, no canvas, no PDFs — covering measurement geometry, polarity independence (dark scans), blank/scrap rejection, dust erosion, marginal-stamp rejection (including each guard that keeps real margin content), and the never-clip property of the document box.
+
 ### Database Schema (`server/data/papers.db`)
 
 SQLite database created at runtime. 13 tables with cascade deletion:
@@ -205,7 +240,7 @@ Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `pape
 
 **Important:** The project was originally client-side only, storing everything in localStorage. Most data has since been migrated server-side. Do not introduce new localStorage keys for persistent data — use the server-side settings or database instead.
 
-* **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines, chat sessions + messages, settings (Claude API key, similarity threshold, Scout backend), paper embeddings, worldline flag log, Scout runs
+* **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines, chat sessions + messages, settings (Claude API key, similarity threshold, Scout backend, PDF trim mode), paper embeddings, worldline flag log, Scout runs
 * **Client-side (localStorage)**: Only visual preferences that affect rendering before API loads — color scheme and card font size (`paperpile-navigate-visual-prefs`)
 
 ## Key Dependencies
@@ -254,4 +289,7 @@ Targeted verification harnesses live in `server/scripts/` and run against isolat
 npm run verify:similarity --prefix server   # similarity-core decision logic + flag log
 npm run verify:specter2   --prefix server   # loads the embedding model (the one gate that needs it)
 npm run verify:scout      --prefix server   # Scout scan-key identity, fingerprint, run store, output normalization
+npm run verify:autotrim   --prefix server   # margin detection + document-box aggregation (client code, synthetic pages)
 ```
+
+`verify:autotrim` is the exception to "harnesses live server-side": it exercises `client/src/utils/autoTrim.ts`, which is pure and DOM-free in the parts that matter, and `server/`'s tsconfig only compiles `src/**`, so importing across the boundary from `scripts/` costs the server build nothing.

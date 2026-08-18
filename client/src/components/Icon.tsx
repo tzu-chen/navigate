@@ -24,7 +24,8 @@ type IconName =
   | 'sidebar-left'
   | 'sidebar-right'
   | 'eye'
-  | 'plus';
+  | 'plus'
+  | 'crop';
 
 interface IconProps {
   name: IconName;
@@ -117,6 +118,12 @@ const paths: Record<IconName, React.ReactNode> = {
   ),
   plus: (
     <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" fill="none" />
+  ),
+  crop: (
+    <>
+      <path d="M4 1v11h11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      <path d="M1 4h11v11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+    </>
   ),
 };
 
