@@ -1,4 +1,4 @@
-import { ArxivPaper, SavedPaper, Comment, CommentWithPaper, Tag, CategoryGroup, FavoriteAuthor, ChatMessage, ChatSession, WorldlineChatSession, Worldline, PaperSimilarityResult, ScoutScanResult, TrimMode } from '../types';
+import { ArxivPaper, SavedPaper, Comment, CommentWithPaper, Tag, CategoryGroup, FavoriteAuthor, ChatBackend, ChatBackendStatus, ChatMessage, ChatSession, ChatTurnMeta, ChatTurnResult, WorldlineChatSession, Worldline, PaperSimilarityResult, ScoutScanResult, TrimMode, Walkthrough, WalkthroughBuildEvent, WalkthroughOutline, WalkthroughPaperState } from '../types';
 import {
   coerceSchemeId,
   DEFAULT_SCHEME_ID,
@@ -379,33 +379,119 @@ export async function getFavoriteAuthorPublications(): Promise<{ papers: (ArxivP
   return request('/authors/favorites/publications');
 }
 
-// Chat
-export interface ChatResponse {
-  message: string;
-  model?: string;
-  usage?: {
-    input_tokens: number;
-    output_tokens: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-  };
+// --- Chat --------------------------------------------------------------------
+//
+// A turn is a server-sent event stream, not a JSON body. Two consequences for
+// callers:
+//
+//  - **The transcript is no longer sent.** The server owns the conversation:
+//    it holds the CLI session the model is resuming, and the paper it was
+//    primed with. Sending `{ sessionId, message }` is the whole request, and
+//    the server persists both messages itself — so a caller does not save the
+//    turn afterwards, it just reloads.
+//  - `EventSource` cannot POST, so this reads the response body directly.
+
+export interface ChatStreamHandlers {
+  /** Fires once, before the first token: which backend, model and context mode. */
+  onMeta?: (meta: ChatTurnMeta) => void;
+  onDelta: (text: string) => void;
+  onDone: (result: ChatTurnResult) => void;
+  onError: (message: string) => void;
 }
 
-export async function sendChatMessage(
-  messages: ChatMessage[],
-  apiKey: string,
+/** Returns an abort function; aborting also kills the model call server-side. */
+function streamChat(path: string, body: unknown, handlers: ChatStreamHandlers): () => void {
+  const controller = new AbortController();
+
+  (async () => {
+    let settled = false;
+    try {
+      const res = await fetch(`${BASE}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      // A request rejected before the stream opens still answers with JSON.
+      if (!res.ok || !res.body) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || 'Request failed');
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = '';
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+
+        let split: number;
+        while ((split = buffered.indexOf('\n\n')) !== -1) {
+          const frame = buffered.slice(0, split);
+          buffered = buffered.slice(split + 2);
+          const line = frame.split('\n').find(l => l.startsWith('data:'));
+          if (!line) continue;
+
+          let event: any;
+          try {
+            event = JSON.parse(line.slice(5).trim());
+          } catch {
+            continue;
+          }
+
+          if (event.type === 'meta') handlers.onMeta?.(event as ChatTurnMeta);
+          else if (event.type === 'delta') handlers.onDelta(String(event.text ?? ''));
+          else if (event.type === 'done') {
+            settled = true;
+            handlers.onDone(event as ChatTurnResult);
+          } else if (event.type === 'error') {
+            settled = true;
+            handlers.onError(String(event.message ?? 'Failed to get a response.'));
+          }
+        }
+      }
+
+      if (!settled) handlers.onError('The response ended before it finished.');
+    } catch (err: any) {
+      if (controller.signal.aborted) return;
+      handlers.onError(err?.message || 'Failed to get a response from Claude');
+    }
+  })();
+
+  return () => controller.abort();
+}
+
+export function streamChatMessage(
+  sessionId: string,
+  message: string,
   paperContext: {
     title: string;
     summary: string;
     authors: string[];
     categories: string[];
     arxivId: string;
-  }
-): Promise<ChatResponse> {
-  return request('/chat', {
-    method: 'POST',
-    body: JSON.stringify({ messages, apiKey, paperContext }),
-  });
+  },
+  handlers: ChatStreamHandlers,
+  apiKey?: string
+): () => void {
+  return streamChat('/chat', { sessionId, message, paperContext, apiKey }, handlers);
+}
+
+export function streamWorldlineChatMessage(
+  sessionId: string,
+  message: string,
+  worldlineContext: {
+    worldlineId: number;
+    worldlineName: string;
+    papers: { title: string; authors: string[]; summary: string; arxivId: string }[];
+  },
+  handlers: ChatStreamHandlers,
+  apiKey?: string
+): () => void {
+  return streamChat('/chat/worldline', { sessionId, message, worldlineContext, apiKey }, handlers);
 }
 
 export async function verifyApiKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
@@ -415,18 +501,63 @@ export async function verifyApiKey(apiKey: string): Promise<{ valid: boolean; er
   });
 }
 
-// Worldline Chat
-export async function sendWorldlineChatMessage(
-  messages: ChatMessage[],
-  apiKey: string,
-  worldlineContext: {
-    worldlineName: string;
-    papers: { title: string; authors: string[]; summary: string; arxivId: string }[];
+/**
+ * Can this machine answer a message at all? On the `cli` backend there is no
+ * API key to check, so Settings checks the binary and its credentials instead.
+ * Both probes are local and cost nothing.
+ */
+export async function getChatBackendStatus(): Promise<ChatBackendStatus> {
+  return request('/chat/backend-status');
+}
+
+/**
+ * Chat settings live server-side alongside `scoutBackend` and the walkthrough
+ * group, and outside `AppSettings` for the same reason: a self-contained group
+ * with its own panel.
+ *
+ * Changing any of these affects **new sessions only**. An existing session
+ * keeps the model, backend and frozen prompt it was created with, because a
+ * resume under different ones would miss the cache at best and fail at worst.
+ */
+export interface ChatSettings {
+  backend: ChatBackend;
+  model: string;
+  effort: 'low' | 'medium' | 'high';
+  /** The *preference*; the actual mode still falls back per paper. */
+  contextMode: 'tex' | 'pdf';
+}
+
+export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
+  backend: 'cli',
+  model: 'claude-opus-5',
+  effort: 'medium',
+  contextMode: 'tex',
+};
+
+export async function getChatSettings(): Promise<ChatSettings> {
+  try {
+    const s = await request<Record<string, string>>('/settings');
+    const effort = s.chatEffort;
+    return {
+      backend: s.chatBackend === 'api' ? 'api' : 'cli',
+      model: s.chatModel || DEFAULT_CHAT_SETTINGS.model,
+      effort: effort === 'low' || effort === 'medium' || effort === 'high' ? effort : 'medium',
+      contextMode: s.chatContextMode === 'pdf' ? 'pdf' : 'tex',
+    };
+  } catch {
+    return { ...DEFAULT_CHAT_SETTINGS };
   }
-): Promise<ChatResponse> {
-  return request('/chat/worldline', {
-    method: 'POST',
-    body: JSON.stringify({ messages, apiKey, worldlineContext }),
+}
+
+export async function saveChatSettings(settings: ChatSettings): Promise<void> {
+  await request('/settings', {
+    method: 'PUT',
+    body: JSON.stringify({
+      chatBackend: settings.backend,
+      chatModel: settings.model,
+      chatEffort: settings.effort,
+      chatContextMode: settings.contextMode,
+    }),
   });
 }
 
@@ -441,47 +572,6 @@ export async function getWorldlineChatSessions(worldlineId: number): Promise<Wor
     createdAt: s.created_at,
     updatedAt: s.updated_at,
   }));
-}
-
-export async function getWorldlineChatSession(sessionId: string): Promise<WorldlineChatSession | undefined> {
-  try {
-    const s = await request<any>(`/chat/sessions/${sessionId}`);
-    return {
-      id: s.id,
-      worldlineId: s.worldline_id,
-      worldlineName: s.worldline_name,
-      messages: s.messages,
-      createdAt: s.created_at,
-      updatedAt: s.updated_at,
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-export async function saveWorldlineChatSession(session: WorldlineChatSession): Promise<void> {
-  // Check if session exists; if not, create it
-  const existing = await getWorldlineChatSession(session.id);
-  if (!existing) {
-    await request('/chat/sessions', {
-      method: 'POST',
-      body: JSON.stringify({
-        id: session.id,
-        worldline_id: session.worldlineId,
-        worldline_name: session.worldlineName,
-        session_type: 'worldline',
-      }),
-    });
-  }
-  // Add new messages (server stores them incrementally)
-  const existingCount = existing?.messages?.length ?? 0;
-  const newMessages = session.messages.slice(existingCount);
-  if (newMessages.length > 0) {
-    await request(`/chat/sessions/${session.id}/messages/batch`, {
-      method: 'POST',
-      body: JSON.stringify({ messages: newMessages }),
-    });
-  }
 }
 
 export async function deleteWorldlineChatSession(sessionId: string): Promise<void> {
@@ -781,6 +871,9 @@ function mapServerChatSession(s: any): ChatSession {
     messages: s.messages,
     createdAt: s.created_at,
     updatedAt: s.updated_at,
+    contextMode: s.context_mode ?? undefined,
+    backend: s.backend ?? undefined,
+    model: s.model ?? undefined,
   };
 }
 
@@ -794,39 +887,8 @@ export async function getChatSessionsForPaper(arxivId: string): Promise<ChatSess
   return sessions.map(mapServerChatSession);
 }
 
-export async function getChatSession(sessionId: string): Promise<ChatSession | undefined> {
-  try {
-    const s = await request<any>(`/chat/sessions/${sessionId}`);
-    return mapServerChatSession(s);
-  } catch {
-    return undefined;
-  }
-}
-
-export async function saveChatSession(session: ChatSession): Promise<void> {
-  // Check if session exists; if not, create it
-  const existing = await getChatSession(session.id);
-  if (!existing) {
-    await request('/chat/sessions', {
-      method: 'POST',
-      body: JSON.stringify({
-        id: session.id,
-        arxiv_id: session.arxivId,
-        paper_title: session.paperTitle,
-        session_type: 'paper',
-      }),
-    });
-  }
-  // Add new messages incrementally
-  const existingCount = existing?.messages?.length ?? 0;
-  const newMessages = session.messages.slice(existingCount);
-  if (newMessages.length > 0) {
-    await request(`/chat/sessions/${session.id}/messages/batch`, {
-      method: 'POST',
-      body: JSON.stringify({ messages: newMessages }),
-    });
-  }
-}
+// `getChatSession` and `saveChatSession` are gone: a turn is written server-side
+// as part of the stream, so the client never assembles or uploads a transcript.
 
 export async function deleteChatSession(sessionId: string): Promise<void> {
   await request(`/chat/sessions/${sessionId}`, { method: 'DELETE' });
@@ -834,4 +896,174 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
 
 export async function deleteAllChatSessionsForPaper(arxivId: string): Promise<void> {
   await request(`/chat/sessions/paper/${encodeURIComponent(arxivId)}`, { method: 'DELETE' });
+}
+
+// --- Walkthroughs ------------------------------------------------------------
+//
+// Routes are action-first (`/walkthrough/build/<id>`, not `/walkthrough/<id>/build`)
+// because arXiv ids contain slashes: `hep-th/9711200` under a trailing path
+// segment is ambiguous. The id still goes through encodeURIComponent for the
+// query-unsafe characters.
+
+function wtPath(action: string, arxivId: string): string {
+  // Slashes are meaningful here — the route matches them with a wildcard — so
+  // only the genuinely unsafe characters are escaped.
+  return `/walkthrough/${action}/${arxivId.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+export async function getWalkthroughsForPaper(arxivId: string): Promise<WalkthroughPaperState> {
+  return request(wtPath('paper', arxivId));
+}
+
+/** The cheap structured pass with the fitness gate. Idempotent per source + contract. */
+export async function outlineWalkthrough(
+  arxivId: string,
+  force = false
+): Promise<Walkthrough & { cached: boolean; contextMode?: string }> {
+  return request(wtPath('outline', arxivId), {
+    method: 'POST',
+    body: JSON.stringify({ force }),
+  });
+}
+
+/** Edit the outline before paying for a build — the main quality lever. */
+export async function saveWalkthroughOutline(
+  id: number,
+  outline: WalkthroughOutline,
+  knownLabels: string[]
+): Promise<Walkthrough> {
+  return request(`/walkthrough/row/${id}/outline`, {
+    method: 'PUT',
+    body: JSON.stringify({ outline, knownLabels }),
+  });
+}
+
+export async function buildWalkthrough(
+  arxivId: string,
+  walkthroughId: number,
+  force = false
+): Promise<{ jobId?: string; walkthroughId?: number; reused?: boolean; cached?: boolean; walkthrough?: Walkthrough }> {
+  return request(wtPath('build', arxivId), {
+    method: 'POST',
+    body: JSON.stringify({ walkthroughId, force }),
+  });
+}
+
+export async function deleteWalkthrough(id: number): Promise<void> {
+  await request(`/walkthrough/row/${id}`, { method: 'DELETE' });
+}
+
+export function getWalkthroughBundleUrl(id: number): string {
+  return `${BASE}/walkthrough/row/${id}/bundle`;
+}
+
+/** Which papers have a walkthrough, for the Library indicator. */
+export async function getWalkthroughIndicators(): Promise<{ arxiv_id: string; status: string }[]> {
+  return request('/walkthrough/indicators');
+}
+
+export async function getWalkthroughRuns(limit = 50): Promise<{
+  model: string;
+  contractVersion: string;
+  runs: {
+    id: number; arxivId: string; status: string; fitness: string | null;
+    model: string | null; backend: string | null; sceneCount: number;
+    outlineCost: number; buildCost: number; estimatedCost: number;
+    error: string | null; createdAt: string;
+  }[];
+}> {
+  return request(`/walkthrough/runs?limit=${limit}`);
+}
+
+/**
+ * Follow a build over SSE. Returns an abort function.
+ *
+ * A build is minutes and dollars, so progress is not optional: the caller gets
+ * every stage, tool call and text delta as it happens, and a terminal callback
+ * carrying the finished row.
+ */
+export function streamWalkthroughBuild(
+  jobId: string,
+  handlers: {
+    onEvent: (event: WalkthroughBuildEvent) => void;
+    onComplete: (result: { status: string; walkthrough: Walkthrough | null }) => void;
+    onError: (message: string) => void;
+  }
+): () => void {
+  const source = new EventSource(`${BASE}/walkthrough/job/${jobId}/stream`);
+
+  source.onmessage = e => {
+    try {
+      handlers.onEvent(JSON.parse(e.data) as WalkthroughBuildEvent);
+    } catch {
+      /* a malformed frame is not worth tearing the stream down for */
+    }
+  };
+  source.addEventListener('complete', e => {
+    try {
+      handlers.onComplete(JSON.parse((e as MessageEvent).data));
+    } catch {
+      handlers.onComplete({ status: 'error', walkthrough: null });
+    }
+    source.close();
+  });
+  source.onerror = () => {
+    // EventSource retries on its own; only a closed stream is a real failure.
+    if (source.readyState === EventSource.CLOSED) {
+      handlers.onError('Lost the connection to the build.');
+    }
+  };
+
+  return () => source.close();
+}
+
+/**
+ * Walkthrough settings live server-side alongside `scoutBackend`, and outside
+ * `AppSettings` for the same reason `pdfTrimMode` does: they are a self-contained
+ * group with their own panel, not part of the shape every caller loads.
+ */
+export interface WalkthroughSettings {
+  /** 'cli' bills the Claude Code plan and needs no key; 'api' for headless/keyed deploys. */
+  backend: 'cli' | 'api';
+  /** Hard per-build cost ceiling, passed to the CLI as --max-budget-usd. */
+  budgetUsd: number;
+  effort: 'low' | 'medium' | 'high';
+  /** Offer a build on Scout findings at or above this score. 0 disables the offer. */
+  scoutThreshold: number;
+}
+
+export const DEFAULT_WALKTHROUGH_SETTINGS: WalkthroughSettings = {
+  backend: 'cli',
+  budgetUsd: 1.5,
+  effort: 'high',
+  scoutThreshold: 0,
+};
+
+export async function getWalkthroughSettings(): Promise<WalkthroughSettings> {
+  try {
+    const s = await request<Record<string, string>>('/settings');
+    const budget = parseFloat(s.walkthroughBudgetUsd);
+    const threshold = parseInt(s.walkthroughScoutThreshold, 10);
+    const effort = s.walkthroughEffort;
+    return {
+      backend: s.walkthroughBackend === 'api' ? 'api' : 'cli',
+      budgetUsd: Number.isFinite(budget) && budget > 0 ? budget : DEFAULT_WALKTHROUGH_SETTINGS.budgetUsd,
+      effort: effort === 'low' || effort === 'medium' || effort === 'high' ? effort : 'high',
+      scoutThreshold: Number.isFinite(threshold) ? Math.max(0, Math.min(100, threshold)) : 0,
+    };
+  } catch {
+    return { ...DEFAULT_WALKTHROUGH_SETTINGS };
+  }
+}
+
+export async function saveWalkthroughSettings(settings: WalkthroughSettings): Promise<void> {
+  await request('/settings', {
+    method: 'PUT',
+    body: JSON.stringify({
+      walkthroughBackend: settings.backend,
+      walkthroughBudgetUsd: String(settings.budgetUsd),
+      walkthroughEffort: settings.effort,
+      walkthroughScoutThreshold: String(settings.scoutThreshold),
+    }),
+  });
 }

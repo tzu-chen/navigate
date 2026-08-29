@@ -117,6 +117,53 @@ export interface ChatSession {
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
+  /** Frozen at the session's first message; see ChatContextMode. */
+  contextMode?: ChatContextMode;
+  backend?: ChatBackend;
+  model?: string;
+}
+
+export type ChatBackend = 'cli' | 'api';
+
+/**
+ * What the model was actually given for this conversation, resolved once at
+ * session creation and then frozen — switching mid-session would invalidate the
+ * CLI session and its 1-hour prompt cache.
+ *
+ *  tex      — the paper's flattened LaTeX source. Half the tokens of the PDF and
+ *             the better half: macros, \label'led equations, real structure.
+ *  pdf      — no usable source (a PDF-only arXiv submission, or an upload).
+ *  abstract — neither could be fetched. Surfaced rather than hidden.
+ */
+export type ChatContextMode = 'tex' | 'pdf' | 'abstract';
+
+export interface ChatTurnMeta {
+  backend: ChatBackend;
+  model: string;
+  contextMode: ChatContextMode;
+  /** False on the turn that primes the session (the expensive one). */
+  primed: boolean;
+  warnings: string[];
+}
+
+export interface ChatTurnResult extends ChatTurnMeta {
+  message: string;
+  usage: ChatMessageUsage;
+  /** True when a lost model session had to be primed again mid-conversation. */
+  reprimed: boolean;
+}
+
+export interface ChatBackendStatus {
+  backend: ChatBackend;
+  model: string;
+  effort: string;
+  contextMode: string;
+  cli: { present: boolean; version?: string; path: string; error?: string };
+  auth: { loggedIn: boolean; method?: string; subscription?: string; error?: string };
+  apiKeyPresent: boolean;
+  cwd: string;
+  /** Can this machine answer a message right now? */
+  ready: boolean;
 }
 
 export interface Worldline {
@@ -180,3 +227,78 @@ export interface WorldlineChatSession {
 }
 
 export type ViewMode = 'browse' | 'library' | 'authors' | 'viewer' | 'chatHistory' | 'worldline' | 'comments';
+
+// --- Walkthroughs (generated interactive explainers) -------------------------
+
+export type WalkthroughStatus = 'pending' | 'building' | 'ready' | 'failed' | 'unfit';
+export type WalkthroughFitness = 'strong' | 'partial' | 'none';
+export type WalkthroughVisualKind =
+  | 'none' | 'plot2d' | 'field' | 'graph' | 'geometry' | 'process' | 'custom';
+
+export interface WalkthroughScene {
+  title: string;
+  narration: string;
+  /** Equation/theorem labels from the paper's own structure map. */
+  equations: string[];
+  visual: { kind: WalkthroughVisualKind; spec: string };
+  sourceRefs: { section: string; page?: number }[];
+}
+
+export interface WalkthroughOutline {
+  fitness: { verdict: WalkthroughFitness; reason: string };
+  thesis: string;
+  scenes: WalkthroughScene[];
+}
+
+export interface Walkthrough {
+  id: number;
+  arxivId: string;
+  status: WalkthroughStatus;
+  fitness: WalkthroughFitness | null;
+  outline: WalkthroughOutline | null;
+  /** The arXiv version the source was taken from, e.g. 'v7'. */
+  sourceVersion: string | null;
+  contractVersion: string | null;
+  hasBundle: boolean;
+  /** Distillation losses, degraded source, WebGL caveats. */
+  warnings: string[];
+  model: string | null;
+  /** 'cli' billed the local Claude Code plan; 'api' billed the API account. */
+  backend: string | null;
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens: number;
+    cache_read_input_tokens: number;
+    outline_cost: number;
+    build_cost: number;
+    estimated_cost: number;
+  };
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WalkthroughPaperState {
+  arxivId: string;
+  /** The newest ready build, or the newest row when nothing has been built. */
+  current: Walkthrough | null;
+  all: Walkthrough[];
+  contractVersion: string;
+  model: string;
+  maxScenes: number;
+  backend: 'cli' | 'api';
+  budgetUsd: number;
+  effort: string;
+}
+
+/** One progress event from a running build, as delivered over SSE. */
+export type WalkthroughBuildEvent =
+  | { type: 'stage'; stage: string; detail?: string }
+  | { type: 'delta'; text: string }
+  | { type: 'tool'; name: string; detail?: string }
+  /** A tool's outcome. `ok: false` is how a permission refusal becomes visible. */
+  | { type: 'tool_result'; ok: boolean; detail?: string }
+  | { type: 'tokens'; output_tokens: number }
+  | { type: 'error'; message: string }
+  | { type: 'status'; status: 'queued' | 'running' | 'done' | 'error'; detail?: string };

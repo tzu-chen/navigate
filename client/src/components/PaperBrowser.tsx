@@ -45,6 +45,14 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
   const [scoutLoading, setScoutLoading] = useState(false);
   const [scoutError, setScoutError] = useState('');
   const [scoutOnly, setScoutOnly] = useState(false);
+  // Offer (never trigger) a walkthrough on strongly-flagged papers. 0 = off.
+  const [walkthroughThreshold, setWalkthroughThreshold] = useState(0);
+
+  useEffect(() => {
+    api.getWalkthroughSettings()
+      .then(s => setWalkthroughThreshold(s.scoutThreshold))
+      .catch(() => { /* the shortcut is optional */ });
+  }, []);
   const [activeTab, setActiveTab] = useState<'new' | 'cross' | 'replace'>('new');
   const [showMobileSearch, setShowMobileSearch] = useState(false);
   const [arxivIdInput, setArxivIdInput] = useState('');
@@ -686,6 +694,15 @@ export default function PaperBrowser({ onSavePaper, onOpenPaper, savedPaperIds, 
                         <span key={c} className="scout-finding-connection">{c}</span>
                       ))}
                     </div>
+                  )}
+                  {walkthroughThreshold > 0 && scoutFinding.score >= walkthroughThreshold && (
+                    <button
+                      className="scout-finding-walkthrough"
+                      onClick={e => { e.stopPropagation(); onOpenPaper(paper); }}
+                      title="Open this paper and switch to the Walkthrough pane. Nothing is built until you ask."
+                    >
+                      ◈ Consider a walkthrough
+                    </button>
                   )}
                 </div>
               )}

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Markdown from 'react-markdown';
-import { ChatMessage, ChatSession, SavedPaper } from '../types';
+import { ChatBackendStatus, ChatMessage, ChatSession, ChatTurnMeta, SavedPaper } from '../types';
 import * as api from '../services/api';
 
 interface Props {
@@ -18,6 +18,38 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+/** Why this machine cannot answer a message, in the terms of the chosen backend. */
+export function backendReadyMessage(status: ChatBackendStatus): string {
+  if (status.backend === 'api') {
+    return 'Claude API key not configured. Add it in Settings, or switch chat to the CLI backend.';
+  }
+  if (!status.cli.present) {
+    return `The Claude Code CLI was not found (looked for "${status.cli.path}"). Install it, set CLAUDE_CLI_PATH, or switch chat to the API backend in Settings.`;
+  }
+  if (!status.auth.loggedIn) {
+    return 'The Claude Code CLI is installed but not logged in. Run `claude auth login`, or switch chat to the API backend in Settings.';
+  }
+  return 'Chat is not ready.';
+}
+
+const CONTEXT_LABELS: Record<string, { label: string; title: string }> = {
+  tex: {
+    label: 'TeX source',
+    title:
+      "Reading the paper's LaTeX source: the author's macros, real equation labels and true section structure. Answers cite sections and labels, not page numbers — LaTeX has no pagination.",
+  },
+  pdf: {
+    label: 'PDF',
+    title:
+      'Reading the PDF. No LaTeX source was available for this paper (a PDF-only submission, or an upload).',
+  },
+  abstract: {
+    label: 'abstract only',
+    title:
+      'Neither the LaTeX source nor the PDF could be fetched, so the model has the title and abstract only. Answers will be shallow.',
+  },
+};
+
 export default function ChatPanel({ paper, showNotification }: Props) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [relatedPaperSessions, setRelatedPaperSessions] = useState<RelatedPaperSessions[]>([]);
@@ -28,7 +60,11 @@ export default function ChatPanel({ paper, showNotification }: Props) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [showSessionList, setShowSessionList] = useState(false);
-  const [hasApiKey, setHasApiKey] = useState(false);
+  const [backendStatus, setBackendStatus] = useState<ChatBackendStatus | null>(null);
+  /** The answer as it arrives, before the turn commits. */
+  const [streamingText, setStreamingText] = useState('');
+  const [turnMeta, setTurnMeta] = useState<ChatTurnMeta | null>(null);
+  const abortRef = useRef<(() => void) | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const authors = JSON.parse(paper.authors) as string[];
@@ -66,42 +102,37 @@ export default function ChatPanel({ paper, showNotification }: Props) {
         setMessages(paperSessions[0].messages);
       }
       loadRelatedSessions();
-      // Check API key
-      const settings = await api.getSettings();
-      setHasApiKey(!!settings.claudeApiKey);
+      // On the `cli` backend there is no API key to check — what matters is
+      // whether the binary is there and logged in. Both probes are local.
+      api.getChatBackendStatus().then(setBackendStatus).catch(() => setBackendStatus(null));
     })();
   }, [loadSessions, loadRelatedSessions]);
 
+  // A conversation left mid-answer should not keep a model call running.
+  useEffect(() => () => abortRef.current?.(), []);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, streamingText]);
 
-  const persistSession = useCallback(async (sessionMessages: ChatMessage[], sessionId: string | null) => {
-    if (!sessionId || sessionMessages.length === 0) return;
-    const existing = await api.getChatSession(sessionId);
-    const session: ChatSession = {
-      id: sessionId,
-      arxivId: paper.arxiv_id,
-      paperTitle: paper.title,
-      messages: sessionMessages,
-      createdAt: existing?.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    await api.saveChatSession(session);
-    await loadSessions();
-  }, [paper.arxiv_id, paper.title, loadSessions]);
-
+  /**
+   * One turn.
+   *
+   * The transcript is no longer sent: the server holds the model session this
+   * conversation is resuming and the paper it was primed with, so the request
+   * is `{ sessionId, message }` and the server persists both messages itself.
+   * Sending the transcript back would at best be ignored and at worst re-prime
+   * a cached conversation at ~17x the price.
+   */
   const handleSend = async () => {
     const trimmed = input.trim();
     if (!trimmed || loading) return;
 
-    const settings = await api.getSettings();
-    if (!settings.claudeApiKey) {
-      showNotification('Please set your Claude API key in Settings first.');
+    if (backendStatus && !backendStatus.ready) {
+      showNotification(backendReadyMessage(backendStatus));
       return;
     }
 
-    // Create a new session if none active
     let currentSessionId = activeSessionId;
     if (!currentSessionId) {
       currentSessionId = generateId();
@@ -113,54 +144,49 @@ export default function ChatPanel({ paper, showNotification }: Props) {
     setMessages(updatedMessages);
     setInput('');
     setLoading(true);
+    setStreamingText('');
+    setTurnMeta(null);
 
-    try {
-      const response = await api.sendChatMessage(
-        updatedMessages,
-        settings.claudeApiKey,
+    await new Promise<void>(resolve => {
+      abortRef.current = api.streamChatMessage(
+        currentSessionId!,
+        trimmed,
         {
           title: paper.title,
           summary: paper.summary,
           authors,
           categories,
           arxivId: paper.arxiv_id,
+        },
+        {
+          onMeta: meta => setTurnMeta(meta),
+          onDelta: text => setStreamingText(prev => prev + text),
+          onDone: result => {
+            setTurnMeta(result);
+            setMessages([
+              ...updatedMessages,
+              { role: 'assistant', content: result.message, usage: result.usage },
+            ]);
+            setStreamingText('');
+            for (const warning of result.warnings ?? []) showNotification(warning);
+            resolve();
+          },
+          onError: message => {
+            showNotification(message);
+            setMessages([
+              ...updatedMessages,
+              { role: 'assistant', content: `Error: ${message}` },
+            ]);
+            setStreamingText('');
+            resolve();
+          },
         }
       );
+    });
 
-      // Calculate estimated cost based on model pricing
-      const usage = response.usage;
-      let estimatedCost: number | undefined;
-      if (usage) {
-        // Pricing per token for claude-sonnet-4: $3/M input, $15/M output
-        const inputCost = (usage.input_tokens / 1_000_000) * 3;
-        const outputCost = (usage.output_tokens / 1_000_000) * 15;
-        estimatedCost = inputCost + outputCost;
-      }
-
-      const assistantMessage: ChatMessage = {
-        role: 'assistant',
-        content: response.message,
-        usage: usage ? {
-          input_tokens: usage.input_tokens,
-          output_tokens: usage.output_tokens,
-          cache_creation_input_tokens: usage.cache_creation_input_tokens,
-          cache_read_input_tokens: usage.cache_read_input_tokens,
-          estimated_cost: estimatedCost,
-          model: response.model,
-        } : undefined,
-      };
-
-      const withResponse = [...updatedMessages, assistantMessage];
-      setMessages(withResponse);
-      await persistSession(withResponse, currentSessionId);
-    } catch (err: any) {
-      showNotification(err.message || 'Failed to get response from Claude');
-      const withError = [...updatedMessages, { role: 'assistant' as const, content: 'Error: Failed to get a response. Please check your API key in Settings.' }];
-      setMessages(withError);
-      await persistSession(withError, currentSessionId);
-    } finally {
-      setLoading(false);
-    }
+    abortRef.current = null;
+    setLoading(false);
+    loadSessions();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -221,6 +247,17 @@ export default function ChatPanel({ paper, showNotification }: Props) {
     }
   };
 
+  /**
+   * What this conversation was actually given, from the session row (frozen at
+   * its first message) or from the turn in flight. Shown rather than hidden:
+   * a paper answered from its abstract alone reads very differently from one
+   * answered from its source, and the reader should know which they have.
+   */
+  const activeSession = sessions.find(s => s.id === activeSessionId);
+  const contextMode = turnMeta?.contextMode ?? activeSession?.contextMode;
+  const contextInfo = contextMode ? CONTEXT_LABELS[contextMode] : null;
+  const usingCli = (turnMeta?.backend ?? activeSession?.backend ?? backendStatus?.backend) === 'cli';
+
   const firstUserMsg = (s: ChatSession) => {
     const first = s.messages.find(m => m.role === 'user');
     return first ? first.content.slice(0, 60) + (first.content.length > 60 ? '...' : '') : 'Empty session';
@@ -228,10 +265,9 @@ export default function ChatPanel({ paper, showNotification }: Props) {
 
   return (
     <div className="chat-panel">
-      {!hasApiKey && (
+      {backendStatus && !backendStatus.ready && (
         <div className="chat-no-key">
-          <p>Claude API key not configured.</p>
-          <p>Go to <strong>Settings</strong> (gear icon in the header) to add your API key.</p>
+          <p>{backendReadyMessage(backendStatus)}</p>
         </div>
       )}
 
@@ -256,6 +292,11 @@ export default function ChatPanel({ paper, showNotification }: Props) {
         <button className="btn btn-primary btn-sm" onClick={handleNewChat}>
           + New Chat
         </button>
+        {contextInfo && (
+          <span className={`chat-context-badge chat-context-${contextMode}`} title={contextInfo.title}>
+            {contextInfo.label}
+          </span>
+        )}
       </div>
 
       {showSessionList && sessions.length > 0 && (
@@ -320,7 +361,7 @@ export default function ChatPanel({ paper, showNotification }: Props) {
       )}
 
       <div className="chat-messages">
-        {messages.length === 0 && hasApiKey && (
+        {messages.length === 0 && !streamingText && (
           <div className="chat-welcome">
             <p>Ask Claude about this paper. Examples:</p>
             <ul>
@@ -348,10 +389,23 @@ export default function ChatPanel({ paper, showNotification }: Props) {
               <div className="chat-message-usage">
                 {msg.usage.model && <span>{msg.usage.model}</span>}
                 <span>{msg.usage.input_tokens.toLocaleString()} in / {msg.usage.output_tokens.toLocaleString()} out</span>
+                {msg.usage.cache_read_input_tokens ? (
+                  <span title="Tokens read from the model's 1-hour prompt cache instead of being re-sent — the paper itself, on every turn after the first.">
+                    {msg.usage.cache_read_input_tokens.toLocaleString()} cached
+                  </span>
+                ) : null}
                 {msg.usage.estimated_cost !== undefined && (
-                  <span>${msg.usage.estimated_cost < 0.01
-                    ? msg.usage.estimated_cost.toFixed(4)
-                    : msg.usage.estimated_cost.toFixed(3)}</span>
+                  <span
+                    title={
+                      usingCli
+                        ? 'List-price equivalent of work billed to the Claude Code plan, not money charged to an API account.'
+                        : 'Estimated API cost at list price.'
+                    }
+                  >
+                    {usingCli ? '≈' : ''}${msg.usage.estimated_cost < 0.01
+                      ? msg.usage.estimated_cost.toFixed(4)
+                      : msg.usage.estimated_cost.toFixed(3)}
+                  </span>
                 )}
               </div>
             )}
@@ -361,9 +415,17 @@ export default function ChatPanel({ paper, showNotification }: Props) {
         {loading && (
           <div className="chat-message chat-message-assistant">
             <div className="chat-message-label">Claude</div>
-            <div className="chat-message-content chat-typing">
-              Thinking...
-            </div>
+            {streamingText ? (
+              <div className="chat-message-content markdown-body chat-streaming">
+                <Markdown>{streamingText}</Markdown>
+              </div>
+            ) : (
+              <div className="chat-message-content chat-typing">
+                {turnMeta && !turnMeta.primed
+                  ? 'Reading the paper...'
+                  : 'Thinking...'}
+              </div>
+            )}
           </div>
         )}
 
@@ -377,14 +439,25 @@ export default function ChatPanel({ paper, showNotification }: Props) {
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={viewingRelatedSession ? 'Viewing related paper chat (read-only)' : hasApiKey ? 'Ask about this paper...' : 'Set API key in Settings first'}
+            placeholder={
+              viewingRelatedSession
+                ? 'Viewing related paper chat (read-only)'
+                : backendStatus && !backendStatus.ready
+                  ? 'Chat backend is not ready — see Settings'
+                  : 'Ask about this paper...'
+            }
             rows={2}
-            disabled={!hasApiKey || loading || !!viewingRelatedSession}
+            disabled={(backendStatus ? !backendStatus.ready : false) || loading || !!viewingRelatedSession}
           />
           <button
             className="btn btn-primary chat-send-btn"
             onClick={handleSend}
-            disabled={!input.trim() || loading || !hasApiKey || !!viewingRelatedSession}
+            disabled={
+              !input.trim() ||
+              loading ||
+              (backendStatus ? !backendStatus.ready : false) ||
+              !!viewingRelatedSession
+            }
           >
             Send
           </button>

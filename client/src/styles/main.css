@@ -3331,6 +3331,55 @@ input[type="color"] {
   font-style: italic;
 }
 
+/* The answer as it streams. The caret marks the difference between "still
+   writing" and "finished and short", which is otherwise invisible. */
+.chat-streaming > *:last-child::after {
+  content: '\258B';
+  margin-left: 2px;
+  color: var(--accent-color, var(--text-muted));
+  animation: chat-caret 1s step-end infinite;
+}
+
+@keyframes chat-caret {
+  50% { opacity: 0; }
+}
+
+/* Which context this conversation was actually given. Frozen per session, so it
+   is a property of the conversation rather than of the current settings. */
+.chat-context-badge {
+  margin-left: auto;
+  align-self: center;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.chat-context-tex {
+  border-color: var(--accent-color, var(--border-color));
+  color: var(--accent-color, var(--text-muted));
+}
+
+/* Degraded context is worth noticing: answers from an abstract alone are shallow. */
+.chat-context-abstract {
+  border-color: var(--warning, var(--border-color));
+  color: var(--warning, var(--text-muted));
+}
+
+.chat-backend-status.ok {
+  color: var(--success, var(--text-muted));
+}
+
+.chat-backend-status.bad {
+  color: var(--warning, var(--text-muted));
+}
+
 .chat-input-area {
   border-top: 1px solid var(--border-color);
   padding: 12px 16px;
@@ -6187,3 +6236,348 @@ input[type="color"] {
   color: transparent;
 }
 
+
+/* ============================================================
+   Walkthrough pane — generated interactive paper explainers
+   ============================================================ */
+
+/* Three-way pane layout: PDF only | split | walkthrough only. */
+.pane-toggle {
+  display: inline-flex;
+  border: 1px solid var(--mono-line-strong);
+  border-radius: 5px;
+  overflow: hidden;
+}
+/* Icon-only: the header already carries Prev/Next, the tier select and four
+   actions, and a layout switcher is one of the few controls whose icon really
+   is self-explanatory — the glyph *is* the layout it produces. */
+.pane-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 5px 9px;
+  cursor: pointer;
+  border: none;
+  background: var(--mono-surface-paper);
+  color: var(--mono-text-muted);
+}
+.pane-toggle-btn + .pane-toggle-btn { border-left: 1px solid var(--mono-line); }
+.pane-toggle-btn:hover { color: var(--mono-text); }
+.pane-toggle-btn.is-active {
+  background: var(--mono-accent);
+  color: var(--mono-text-on-accent);
+}
+/* Both panes are always mounted; the mode class decides what is visible.
+   `display: none` (not width: 0) so a hidden PDF pane stops rendering pages
+   entirely — PDFViewer's fitToWidth ignores a zero-width container and refits
+   from its ResizeObserver when the pane comes back. */
+/* `.viewer-pdf` (same element) sets flex-direction: column for the single-pane
+   case, so the row direction has to be stated explicitly here. */
+.viewer-panes { display: flex; flex-direction: row; align-items: stretch; min-width: 0; }
+.viewer-pane { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.viewer-pane > * { flex: 1; min-height: 0; }
+
+.pane-mode-pdf .viewer-pane-pdf { flex: 1; }
+.pane-mode-pdf .viewer-pane-walkthrough { display: none; }
+
+.pane-mode-walkthrough .viewer-pane-pdf { display: none; }
+.pane-mode-walkthrough .viewer-pane-walkthrough { flex: 1; }
+
+.pane-mode-split .viewer-pane-pdf { flex: 1 1 50%; }
+.pane-mode-split .viewer-pane-walkthrough {
+  flex: 1 1 50%;
+  border-left: 1px solid var(--mono-line-strong);
+}
+
+/* Stack rather than squeeze on a narrow screen: two 300px columns of a paper
+   is worse than either one alone. */
+@media (max-width: 900px) {
+  .pane-mode-split { flex-direction: column; }
+  .pane-mode-split .viewer-pane-pdf,
+  .pane-mode-split .viewer-pane-walkthrough { flex: 1 1 50%; }
+  .pane-mode-split .viewer-pane-walkthrough {
+    border-left: none;
+    border-top: 1px solid var(--mono-line-strong);
+  }
+}
+
+.wtp {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--mono-surface-sunken);
+}
+
+.wtp-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--mono-line);
+  background: var(--mono-surface-chrome);
+  font-size: 0.8rem;
+}
+.wtp-title { font-weight: 600; color: var(--mono-text); }
+.wtp-header-spacer { flex: 1; }
+.wtp-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wtp-chip {
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  color: var(--mono-text-muted);
+  background: var(--mono-surface-sunken);
+  border: 1px solid var(--mono-line);
+}
+.wtp-fitness {
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.wtp-fitness-strong { color: var(--mono-success); background: var(--mono-success-wash); }
+.wtp-fitness-partial { color: var(--mono-warning); background: var(--mono-warning-wash); }
+.wtp-fitness-none { color: var(--mono-text-muted); background: var(--mono-surface-sunken); }
+
+.wtp-history { border-bottom: 1px solid var(--mono-line); background: var(--mono-surface-chrome); }
+.wtp-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+  border: none;
+  border-top: 1px solid var(--mono-line-faint);
+  background: transparent;
+  color: var(--mono-text-muted);
+}
+.wtp-history-row:hover { background: var(--mono-accent-wash); }
+.wtp-history-row.is-active { color: var(--mono-text); background: var(--mono-accent-wash-strong); }
+.wtp-history-when { flex: 1; }
+.wtp-history-cost { font-variant-numeric: tabular-nums; }
+.wtp-history-delete { padding: 0 4px; opacity: 0.5; }
+.wtp-history-delete:hover { opacity: 1; color: var(--mono-error); }
+.wtp-status { font-weight: 600; text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.04em; }
+.wtp-status-ready { color: var(--mono-success); }
+.wtp-status-failed { color: var(--mono-error); }
+.wtp-status-building { color: var(--mono-warning); }
+.wtp-status-pending, .wtp-status-unfit { color: var(--mono-text-faint); }
+
+.wtp-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px 32px;
+  text-align: center;
+  color: var(--mono-text-muted);
+}
+.wtp-lede { font-size: 1rem; color: var(--mono-text); margin: 0; }
+.wtp-note {
+  max-width: 46ch;
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--mono-text-faint);
+}
+.wtp-error {
+  margin: 10px 14px;
+  padding: 8px 12px;
+  font-size: 0.8rem;
+  color: var(--mono-error);
+  background: var(--mono-error-wash);
+  border: 1px solid var(--mono-error);
+  border-radius: 5px;
+}
+.wtp-warnings {
+  margin: 8px 14px;
+  padding: 8px 12px 8px 28px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--mono-text-muted);
+  background: var(--mono-warning-wash);
+  border-radius: 5px;
+}
+
+/* --- The outline: read, edit, then decide whether to pay for a build --- */
+.wtp-outline { flex: 1; overflow-y: auto; padding: 16px 18px 28px; }
+.wtp-verdict {
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--mono-text-muted);
+  background: var(--mono-surface-chrome);
+  border-left: 3px solid var(--mono-accent);
+  border-radius: 0 5px 5px 0;
+}
+.wtp-verdict strong { color: var(--mono-text); }
+.wtp-thesis {
+  margin: 0 0 18px;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--mono-text);
+}
+.wtp-scenes { display: flex; flex-direction: column; gap: 12px; }
+.wtp-scene {
+  padding: 12px 14px;
+  background: var(--mono-surface-paper);
+  border: 1px solid var(--mono-line);
+  border-radius: 6px;
+}
+.wtp-scene-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.wtp-scene-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 50%;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--mono-text-muted);
+  background: var(--mono-surface-sunken);
+}
+.wtp-scene-title { flex: 1; font-weight: 600; font-size: 0.9rem; color: var(--mono-text); }
+.wtp-kind {
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 0.68rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--mono-cat-2);
+  background: var(--mono-info-wash);
+}
+.wtp-kind-none { color: var(--mono-text-faint); background: var(--mono-surface-sunken); }
+.wtp-scene-remove {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--mono-text-faint);
+  font-size: 0.8rem;
+}
+.wtp-scene-remove:hover { color: var(--mono-error); }
+.wtp-scene-narration {
+  margin: 0 0 8px;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--mono-text);
+}
+.wtp-scene-spec {
+  margin: 0;
+  padding-left: 10px;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--mono-text-muted);
+  border-left: 2px solid var(--mono-line);
+}
+.wtp-scene-refs { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.wtp-ref-chip {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.68rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--mono-text-faint);
+  background: var(--mono-surface-sunken);
+}
+.wtp-ref-chip.is-clickable { cursor: pointer; color: var(--mono-accent); }
+.wtp-ref-chip.is-clickable:hover { background: var(--mono-accent-wash-strong); }
+
+.wtp-input {
+  width: 100%;
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 6px 8px;
+  color: var(--mono-text);
+  background: var(--mono-surface-editor, var(--mono-surface-paper));
+  border: 1px solid var(--mono-line-strong);
+  border-radius: 4px;
+  resize: vertical;
+}
+.wtp-input:focus { outline: none; border-color: var(--mono-accent); }
+.wtp-thesis-input { margin-bottom: 16px; }
+.wtp-select { width: auto; margin-bottom: 6px; }
+.wtp-scene-visual-edit { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.wtp-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+
+/* --- A build in progress: a minutes-long spend must stay legible --- */
+.wtp-building { flex: 1; display: flex; flex-direction: column; padding: 16px 18px; min-height: 0; }
+.wtp-building-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+  color: var(--mono-text);
+  margin-bottom: 10px;
+}
+.wtp-spinner {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 2px solid var(--mono-line-strong);
+  border-top-color: var(--mono-accent);
+  border-radius: 50%;
+  animation: wtp-spin 0.8s linear infinite;
+}
+@keyframes wtp-spin { to { transform: rotate(360deg); } }
+.wtp-progress {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  line-height: 1.65;
+  color: var(--mono-text-muted);
+  background: var(--mono-surface-paper);
+  border: 1px solid var(--mono-line);
+  border-radius: 5px;
+}
+.wtp-progress-line { white-space: pre-wrap; word-break: break-word; }
+
+/* --- The sandboxed bundle --- */
+.wtp-frame-wrap { flex: 1; position: relative; min-height: 0; }
+.wtp-frame { width: 100%; height: 100%; border: none; display: block; background: var(--mono-surface-paper); }
+.wtp-frame-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  color: var(--mono-text-faint);
+  background: var(--mono-surface-paper);
+  pointer-events: none;
+}
+
+/* Indicators elsewhere in the app. */
+.walkthrough-badge {
+  margin-left: 6px;
+  font-size: 0.75em;
+  color: var(--mono-accent);
+  vertical-align: middle;
+}
+.scout-finding-walkthrough {
+  margin-top: 8px;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  color: var(--mono-accent);
+  background: transparent;
+  border: 1px solid var(--mono-line-strong);
+  border-radius: 4px;
+}
+.scout-finding-walkthrough:hover {
+  border-color: var(--mono-accent);
+  background: var(--mono-accent-wash);
+}

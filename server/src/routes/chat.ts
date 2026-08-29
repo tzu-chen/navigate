@@ -11,11 +11,36 @@ import {
   deleteChatSessionsByArxivId,
   addChatMessage,
   getChatMessages,
+  getChatSessionPriming,
+  setChatSessionPriming,
+  setChatSessionCliId,
+  getLiveCliSessionIds,
+  getCliSessionIdsForPaper,
   getSetting,
   getPaperByArxivId,
+  getWalkthroughsByArxivId,
 } from '../services/database';
 import { getLocalPdfPathForArxivId, resolveDbPdfPath, getProxyCachePath } from '../services/pdf';
 import { fetchArxivPdf } from '../services/arxiv';
+import {
+  ChatBackend,
+  ChatContextMode,
+  DEFAULT_CHAT_BACKEND,
+  DEFAULT_CHAT_CONTEXT_MODE,
+  DEFAULT_CHAT_EFFORT,
+  DEFAULT_CHAT_MODEL,
+  PaperChatContext,
+  ResolvedContext,
+  WorldlineChatContext,
+  buildPaperSystemPrompt,
+  buildWorldlineSystemPrompt,
+  getBackendStatus,
+  reapCliSession,
+  resolvePaperContext,
+  runChatTurn,
+  sweepCliSessions,
+  withSessionLock,
+} from '../services/chat';
 
 const router = Router();
 
@@ -83,235 +108,349 @@ async function fetchPdfBase64(arxivId: string): Promise<string> {
   return base64;
 }
 
-interface ChatRequest {
-  messages: { role: 'user' | 'assistant'; content: string }[];
-  apiKey: string;
-  paperContext: {
-    title: string;
-    summary: string;
-    authors: string[];
-    categories: string[];
-    arxivId: string;
-  };
+// --- Settings ----------------------------------------------------------------
+
+function chatBackend(): ChatBackend {
+  // Default to the local `claude -p` CLI: messages bill against the Claude Code
+  // plan rather than metered credits, the prompt cache is 1-hour rather than
+  // 5-minute, and no key has to be stored.
+  return getSetting('chatBackend') === 'api' ? 'api' : DEFAULT_CHAT_BACKEND;
 }
 
-// POST /api/chat - Send a message to Claude with the full PDF document
-router.post('/', async (req: Request, res: Response) => {
+function chatModel(): string {
+  return getSetting('chatModel') || DEFAULT_CHAT_MODEL;
+}
+
+function chatEffort(): string {
+  const raw = getSetting('chatEffort');
+  return raw === 'low' || raw === 'medium' || raw === 'high' ? raw : DEFAULT_CHAT_EFFORT;
+}
+
+function chatContextPreference(): 'tex' | 'pdf' {
+  return getSetting('chatContextMode') === 'pdf' ? 'pdf' : DEFAULT_CHAT_CONTEXT_MODE;
+}
+
+// --- SSE ---------------------------------------------------------------------
+
+/**
+ * The response is a stream, not a JSON body: `--include-partial-messages` gives
+ * token-by-token deltas, and on Opus with adaptive thinking on, the wait for a
+ * whole answer would otherwise be noticeably worse than what it replaced.
+ */
+function openStream(res: Response): void {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+}
+
+function send(res: Response, event: Record<string, unknown>): void {
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+/** The newest built walkthrough's outline, for the frozen prompt. */
+function walkthroughOutlineFor(
+  arxivId: string
+): { thesis: string; scenes: { title: string; narration: string }[] } | null {
+  const row = getWalkthroughsByArxivId(arxivId).find(r => r.status === 'ready' && r.outline);
+  if (!row?.outline) return null;
   try {
-    const { messages, apiKey: clientApiKey, paperContext } = req.body as ChatRequest;
+    const outline = JSON.parse(row.outline) as {
+      thesis?: string;
+      scenes?: { title?: string; narration?: string }[];
+    };
+    const scenes = (outline.scenes ?? [])
+      .map(s => ({ title: String(s.title ?? ''), narration: String(s.narration ?? '') }))
+      .filter(s => s.title || s.narration);
+    if (!outline.thesis && scenes.length === 0) return null;
+    return { thesis: String(outline.thesis ?? ''), scenes };
+  } catch {
+    return null;
+  }
+}
 
-    // Use client-provided key, or fall back to server-stored key
-    const apiKey = clientApiKey || getSetting('claudeApiKey');
-    if (!apiKey) {
-      return res.status(400).json({ error: 'Claude API key is required. Please set it in Settings.' });
+function priorMessages(sessionId: string): { role: 'user' | 'assistant'; content: string }[] {
+  return (getChatMessages(sessionId) as any[]).map(m => ({
+    role: m.role as 'user' | 'assistant',
+    content: m.content as string,
+  }));
+}
+
+interface StreamRequest {
+  sessionId: string;
+  message: string;
+  apiKey?: string;
+}
+
+interface PaperStreamRequest extends StreamRequest {
+  paperContext: PaperChatContext;
+}
+
+interface WorldlineStreamRequest extends StreamRequest {
+  worldlineContext: WorldlineChatContext;
+}
+
+/**
+ * One turn, shared by the paper and worldline routes.
+ *
+ * The two differ only in how the session row is created, how the frozen prompt
+ * is rendered, and what the context block is — everything downstream (priming
+ * vs resuming, streaming, persistence, cost accounting) is the same code, so a
+ * prefix-identity bug cannot exist in one path and not the other.
+ */
+async function streamTurn(
+  res: Response,
+  opts: {
+    sessionId: string;
+    message: string;
+    apiKey?: string;
+    ensureSession: () => void;
+    buildSystemPrompt: (mode: ChatContextMode) => string;
+    resolveContext: () => Promise<ResolvedContext>;
+    /** Modes this conversation can use. Worldline chat has only its own text. */
+    fixedMode?: ChatContextMode;
+  }
+): Promise<void> {
+  const { sessionId, message } = opts;
+
+  if (!sessionId || typeof message !== 'string' || !message.trim()) {
+    res.status(400).json({ error: 'sessionId and a non-empty message are required' });
+    return;
+  }
+
+  opts.ensureSession();
+
+  const stored = getChatSessionPriming(sessionId);
+  const primed = !!stored?.system_prompt;
+
+  // A session keeps the model and backend it was created under: resuming under
+  // a different one would miss the cache at best and fail at worst. New
+  // settings apply to new sessions.
+  const backend: ChatBackend = primed
+    ? (stored!.backend === 'api' ? 'api' : 'cli')
+    : chatBackend();
+  const model = primed ? stored!.model || chatModel() : chatModel();
+  const effort = chatEffort();
+  const apiKey = opts.apiKey || getSetting('claudeApiKey');
+
+  if (backend === 'api' && !apiKey) {
+    res.status(400).json({ error: 'Claude API key is required. Please set it in Settings.' });
+    return;
+  }
+
+  const history = priorMessages(sessionId);
+
+  // Resolved at most once per turn, and not at all on a plain CLI resume.
+  // Held in a box rather than a `let` so the assignment inside the thunk is
+  // visible to the reads after it.
+  const state: { resolved: ResolvedContext | null } = { resolved: null };
+  const getContext = async (): Promise<ResolvedContext> => {
+    if (!state.resolved) {
+      state.resolved = opts.fixedMode
+        ? { mode: opts.fixedMode, warnings: [] }
+        : await opts.resolveContext();
+    }
+    return state.resolved;
+  };
+
+  // The prompt names the context mode, so priming has to resolve the context
+  // before the prompt exists. A primed session skips both.
+  let systemPrompt: string;
+  let contextMode: ChatContextMode;
+  if (primed) {
+    systemPrompt = stored!.system_prompt as string;
+    contextMode = (stored!.context_mode as ChatContextMode) || 'abstract';
+  } else {
+    const context = await getContext();
+    contextMode = context.mode;
+    systemPrompt = opts.buildSystemPrompt(context.mode);
+  }
+
+  openStream(res);
+  send(res, {
+    type: 'meta',
+    backend,
+    model,
+    contextMode,
+    primed,
+    warnings: state.resolved?.warnings ?? [],
+  });
+
+  // Client-disconnect detection hangs off the RESPONSE, not the request.
+  // `req.on('close')` fires when the request body stream ends — on a POST whose
+  // body has already been read, that is immediately, which killed the model call
+  // the moment it started. `res` closes when the response finishes or the socket
+  // dies, and `writableEnded` separates "we finished" from "they left".
+  const abort = { aborted: false };
+  res.on('close', () => {
+    if (!res.writableEnded) abort.aborted = true;
+  });
+
+  try {
+    const result = await withSessionLock(sessionId, () =>
+      runChatTurn(
+        {
+          backend,
+          model,
+          effort,
+          systemPrompt,
+          getContext,
+          cliSessionId: stored?.cli_session_id ?? null,
+          history,
+          message,
+          apiKey,
+        },
+        text => send(res, { type: 'delta', text }),
+        abort
+      )
+    );
+
+    if (!primed) {
+      setChatSessionPriming(sessionId, {
+        cli_session_id: result.cliSessionId,
+        context_mode: (state.resolved?.mode ?? contextMode) as string,
+        system_prompt: systemPrompt,
+        backend: result.backend,
+        model: result.model,
+      });
+    } else if (result.cliSessionId && result.cliSessionId !== stored!.cli_session_id) {
+      // A resume that fell through to a re-prime lives under a new uuid.
+      setChatSessionCliId(sessionId, result.cliSessionId);
     }
 
-    if (!messages || messages.length === 0) {
-      return res.status(400).json({ error: 'Messages are required' });
-    }
-
-    // Fetch the PDF and encode as base64
-    let pdfBase64: string | null = null;
-    try {
-      pdfBase64 = await fetchPdfBase64(paperContext.arxivId);
-    } catch (err) {
-      console.error('Failed to fetch PDF for chat:', err);
-      // Continue without PDF — fall back to metadata-only context
-    }
-
-    // Look up related papers from the same worldline(s)
-    const relatedPapers = getRelatedPaperTitlesByArxivId(paperContext.arxivId);
-    let relatedPapersSection = '';
-    if (relatedPapers.length > 0) {
-      const worldlineSections = relatedPapers.map(wl =>
-        `Worldline "${wl.worldlineName}":\n${wl.titles.map(t => `  - ${t}`).join('\n')}`
-      ).join('\n');
-      relatedPapersSection = `\n\nRelated papers in the same research thread(s):\n${worldlineSections}\n\nThe user may ask about connections between these papers. Use this context when relevant.`;
-    }
-
-    // Build system prompt as content blocks with cache_control
-    // so Anthropic caches the system instructions across turns.
-    const systemContent = [
-      {
-        type: 'text' as const,
-        text: `You are a research assistant helping analyze an academic paper.
-
-Title: ${paperContext.title}
-Authors: ${paperContext.authors.join(', ')}${paperContext.arxivId.startsWith('upload-') ? '' : `\nArXiv ID: ${paperContext.arxivId}`}
-Categories: ${paperContext.categories.join(', ')}
-
-${pdfBase64 ? 'The full PDF of the paper is attached to the first message.' : `Abstract:\n${paperContext.summary}\n\n(The PDF could not be loaded. Answer based on the abstract above.)`}${relatedPapersSection}
-
-Help the user understand the paper, answer questions about its methodology, results, and implications. Be concise and precise in your responses.`,
-        cache_control: { type: 'ephemeral' as const },
-      },
-    ];
-
-    // Build the messages array for Claude, attaching the PDF document
-    // to the first user message with cache_control so Anthropic caches
-    // the (system + PDF) prefix across subsequent turns in a conversation.
-    const claudeMessages: any[] = [];
-    let pdfAttached = false;
-
-    for (const msg of messages) {
-      if (msg.role === 'user' && !pdfAttached && pdfBase64) {
-        // First user message: include PDF document (cached) + text
-        claudeMessages.push({
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: pdfBase64,
-              },
-              cache_control: { type: 'ephemeral' },
-            },
-            {
-              type: 'text',
-              text: msg.content,
-            },
-          ],
-        });
-        pdfAttached = true;
-      } else {
-        claudeMessages.push({
-          role: msg.role,
-          content: msg.content,
-        });
-      }
-    }
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 2048,
-        system: systemContent,
-        messages: claudeMessages,
-      }),
+    addChatMessage({ session_id: sessionId, role: 'user', content: message });
+    addChatMessage({
+      session_id: sessionId,
+      role: 'assistant',
+      content: result.text,
+      input_tokens: result.usage.input_tokens,
+      output_tokens: result.usage.output_tokens,
+      cache_creation_input_tokens: result.usage.cache_creation_input_tokens,
+      cache_read_input_tokens: result.usage.cache_read_input_tokens,
+      estimated_cost: result.usage.estimated_cost,
+      model: result.model,
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
-      const errorMessage = (errorData as any)?.error?.message || `API request failed with status ${response.status}`;
-      return res.status(response.status).json({ error: errorMessage });
+    send(res, {
+      type: 'done',
+      message: result.text,
+      model: result.model,
+      backend: result.backend,
+      contextMode: (state.resolved?.mode ?? contextMode) as string,
+      reprimed: result.reprimed,
+      warnings: result.warnings,
+      usage: result.usage,
+    });
+    res.end();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'Failed to process chat request';
+    console.error('Chat error:', error);
+
+    if (!abort.aborted) {
+      // The question was asked and the failure is part of the record, exactly as
+      // it was before this route streamed.
+      addChatMessage({ session_id: sessionId, role: 'user', content: message });
+      addChatMessage({
+        session_id: sessionId,
+        role: 'assistant',
+        content: `Error: ${detail}`,
+      });
+      send(res, { type: 'error', message: detail });
     }
+    res.end();
+  }
+}
 
-    const data = await response.json() as any;
-    const assistantMessage = data.content?.[0]?.text || 'No response generated.';
+// POST /api/chat — one turn about a paper, streamed.
+router.post('/', async (req: Request, res: Response) => {
+  const { sessionId, message, apiKey, paperContext } = req.body as PaperStreamRequest;
 
-    res.json({
-      message: assistantMessage,
-      model: data.model || 'unknown',
-      usage: {
-        input_tokens: data.usage?.input_tokens || 0,
-        output_tokens: data.usage?.output_tokens || 0,
-        cache_creation_input_tokens: data.usage?.cache_creation_input_tokens || 0,
-        cache_read_input_tokens: data.usage?.cache_read_input_tokens || 0,
+  if (!paperContext?.arxivId) {
+    return res.status(400).json({ error: 'paperContext with an arxivId is required' });
+  }
+
+  try {
+    await streamTurn(res, {
+      sessionId,
+      message,
+      apiKey,
+      ensureSession: () => {
+        if (dbGetChatSession(sessionId)) return;
+        createChatSession({
+          id: sessionId,
+          arxiv_id: paperContext.arxivId,
+          paper_title: paperContext.title,
+          session_type: 'paper',
+        });
       },
+      buildSystemPrompt: mode =>
+        buildPaperSystemPrompt({
+          paper: paperContext,
+          relatedWorldlines: getRelatedPaperTitlesByArxivId(paperContext.arxivId),
+          contextMode: mode,
+          walkthrough: walkthroughOutlineFor(paperContext.arxivId),
+          sourceVersion: null,
+        }),
+      resolveContext: () =>
+        resolvePaperContext(paperContext.arxivId, chatContextPreference(), fetchPdfBase64),
     });
   } catch (error) {
     console.error('Chat error:', error);
-    res.status(500).json({ error: 'Failed to process chat request' });
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to process chat request' });
+    else res.end();
   }
 });
 
-// POST /api/chat/worldline - Chat about a worldline (no PDF, just titles + abstracts)
-interface WorldlineChatRequest {
-  messages: { role: 'user' | 'assistant'; content: string }[];
-  apiKey: string;
-  worldlineContext: {
-    worldlineName: string;
-    papers: { title: string; authors: string[]; summary: string; arxivId: string }[];
-  };
-}
-
+// POST /api/chat/worldline — one turn about a thread of papers, streamed.
 router.post('/worldline', async (req: Request, res: Response) => {
+  const { sessionId, message, apiKey, worldlineContext } = req.body as WorldlineStreamRequest;
+
+  if (!worldlineContext?.papers?.length) {
+    return res.status(400).json({ error: 'Worldline context with papers is required' });
+  }
+
   try {
-    const { messages, apiKey: clientApiKey, worldlineContext } = req.body as WorldlineChatRequest;
-
-    // Use client-provided key, or fall back to server-stored key
-    const apiKey = clientApiKey || getSetting('claudeApiKey');
-    if (!apiKey) {
-      return res.status(400).json({ error: 'Claude API key is required. Please set it in Settings.' });
-    }
-
-    if (!messages || messages.length === 0) {
-      return res.status(400).json({ error: 'Messages are required' });
-    }
-
-    if (!worldlineContext || !worldlineContext.papers || worldlineContext.papers.length === 0) {
-      return res.status(400).json({ error: 'Worldline context with papers is required' });
-    }
-
-    // Build paper context section
-    const papersSection = worldlineContext.papers.map((p, i) =>
-      `Paper ${i + 1}: "${p.title}"\n  Authors: ${p.authors.join(', ')}\n  ArXiv ID: ${p.arxivId}\n  Abstract: ${p.summary}`
-    ).join('\n\n');
-
-    const systemContent = [
-      {
-        type: 'text' as const,
-        text: `You are a research assistant helping analyze a collection of related academic papers grouped under the worldline "${worldlineContext.worldlineName}".
-
-This worldline contains ${worldlineContext.papers.length} paper(s):
-
-${papersSection}
-
-Help the user understand the connections between these papers, their collective contributions, how they build on each other, and the overall research trajectory of this worldline. Be concise and precise in your responses.`,
-        cache_control: { type: 'ephemeral' as const },
+    await streamTurn(res, {
+      sessionId,
+      message,
+      apiKey,
+      // The thread's papers are in the system prompt, so there is no separate
+      // context block to resolve and nothing to fall back through.
+      fixedMode: 'abstract',
+      ensureSession: () => {
+        if (dbGetChatSession(sessionId)) return;
+        createChatSession({
+          id: sessionId,
+          worldline_id: worldlineContext.worldlineId,
+          worldline_name: worldlineContext.worldlineName,
+          session_type: 'worldline',
+        });
       },
-    ];
-
-    const claudeMessages = messages.map(msg => ({
-      role: msg.role,
-      content: msg.content,
-    }));
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 2048,
-        system: systemContent,
-        messages: claudeMessages,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
-      const errorMessage = (errorData as any)?.error?.message || `API request failed with status ${response.status}`;
-      return res.status(response.status).json({ error: errorMessage });
-    }
-
-    const data = await response.json() as any;
-    const assistantMessage = data.content?.[0]?.text || 'No response generated.';
-
-    res.json({
-      message: assistantMessage,
-      model: data.model || 'unknown',
-      usage: {
-        input_tokens: data.usage?.input_tokens || 0,
-        output_tokens: data.usage?.output_tokens || 0,
-        cache_creation_input_tokens: data.usage?.cache_creation_input_tokens || 0,
-        cache_read_input_tokens: data.usage?.cache_read_input_tokens || 0,
-      },
+      buildSystemPrompt: () => buildWorldlineSystemPrompt({ worldline: worldlineContext }),
+      resolveContext: async () => ({ mode: 'abstract', warnings: [] }),
     });
   } catch (error) {
     console.error('Worldline chat error:', error);
-    res.status(500).json({ error: 'Failed to process worldline chat request' });
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to process chat request' });
+    else res.end();
+  }
+});
+
+// GET /api/chat/backend-status — can this machine answer a message at all?
+router.get('/backend-status', async (_req: Request, res: Response) => {
+  try {
+    const status = await getBackendStatus({
+      backend: chatBackend(),
+      model: chatModel(),
+      effort: chatEffort(),
+      contextMode: chatContextPreference(),
+      apiKeyPresent: !!getSetting('claudeApiKey'),
+    });
+    res.json(status);
+  } catch (error) {
+    console.error('Failed to read chat backend status:', error);
+    res.status(500).json({ error: 'Failed to read chat backend status' });
   }
 });
 
@@ -512,7 +651,11 @@ router.post('/sessions/:id/messages/batch', (req: Request, res: Response) => {
 // DELETE /api/chat/sessions/:id - Delete a chat session
 router.delete('/sessions/:id', (req: Request, res: Response) => {
   try {
+    // The CLI's transcript for this conversation is deleted alongside the row,
+    // so the two stores cannot drift into a directory of orphaned sessions.
+    const priming = getChatSessionPriming(req.params.id as string);
     dbDeleteChatSession(req.params.id as string);
+    if (priming?.cli_session_id) reapCliSession(priming.cli_session_id);
     res.json({ success: true });
   } catch (error) {
     console.error('Failed to delete chat session:', error);
@@ -523,7 +666,9 @@ router.delete('/sessions/:id', (req: Request, res: Response) => {
 // DELETE /api/chat/sessions/paper/:arxivId - Delete all sessions for a paper
 router.delete('/sessions/paper/:arxivId', (req: Request, res: Response) => {
   try {
+    const cliIds = getCliSessionIdsForPaper(req.params.arxivId as string);
     deleteChatSessionsByArxivId(req.params.arxivId as string);
+    for (const id of cliIds) reapCliSession(id);
     res.json({ success: true });
   } catch (error) {
     console.error('Failed to delete paper chat sessions:', error);
@@ -565,5 +710,19 @@ router.post('/verify-key', async (req: Request, res: Response) => {
     res.status(500).json({ valid: false, error: 'Failed to verify API key' });
   }
 });
+
+/**
+ * Age sweep over the CLI's own transcript store. Called once at startup: chat
+ * session files accumulate under one project slug and nothing else ever cleans
+ * them up. Scoped to that slug and to files no live session references.
+ */
+export function sweepChatSessions(): void {
+  try {
+    const removed = sweepCliSessions(new Set(getLiveCliSessionIds()));
+    if (removed > 0) console.log(`[navigate] chat: swept ${removed} stale CLI session file(s)`);
+  } catch (err) {
+    console.warn('[navigate] chat: could not sweep CLI session files:', err);
+  }
+}
 
 export default router;

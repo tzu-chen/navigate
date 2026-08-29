@@ -5,6 +5,7 @@ import PDFViewer from './PDFViewer';
 import CommentPanel from './CommentPanel';
 import ChatPanel from './ChatPanel';
 import WorldlineSidebarPanel from './WorldlineSidebarPanel';
+import WalkthroughPane from './WalkthroughPane';
 import WorldlineNavOverlay from './WorldlineNavOverlay';
 import FloatingCommentBox from './FloatingCommentBox';
 import LaTeX from './LaTeX';
@@ -34,6 +35,34 @@ interface Props {
 }
 
 type SidebarSection = 'comments' | 'chat' | 'worldline';
+/**
+ * The viewer's left slot. Not a new top-level ViewMode: the whole sidebar —
+ * chat, comments, worldline — stays live and useful beside a walkthrough, and
+ * "chat about the paper while the mechanism is on screen" is the best thing
+ * this feature can offer.
+ *
+ * `split` shows both at once, which is the mode that makes a walkthrough
+ * genuinely useful — the point of an explainer is checking it against the paper.
+ *
+ * **Both panes stay mounted in every mode**, hidden with CSS rather than
+ * unmounted. Remounting would re-fetch and re-parse the PDF, lose its scroll
+ * position, and reload the walkthrough's iframe from scratch (MathJax and all),
+ * which is exactly the cost you notice when flipping back and forth. PDFViewer
+ * carries a ResizeObserver and its `fitToWidth` already ignores a zero-width
+ * container, so hiding and re-showing refits it correctly.
+ */
+type PaneMode = 'pdf' | 'split' | 'walkthrough';
+
+const PANE_MODES: {
+  mode: PaneMode;
+  icon: 'pane-pdf' | 'pane-split' | 'pane-walkthrough';
+  label: string;
+  title: string;
+}[] = [
+  { mode: 'pdf', icon: 'pane-pdf', label: 'PDF', title: 'PDF only' },
+  { mode: 'split', icon: 'pane-split', label: 'Split', title: 'PDF and walkthrough side by side' },
+  { mode: 'walkthrough', icon: 'pane-walkthrough', label: 'Walkthrough', title: 'Walkthrough only' },
+];
 
 export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeletePaper, showNotification, favoriteAuthorNames, onFavoriteAuthor, onSearchAuthor, onOpenPaper, browsePapers, browsePageOffset = 0, browseTotalResults = 0, onBrowseNavigate, onImmersiveModeChange, initialPage }: Props) {
   const [comments, setComments] = useState<Comment[]>([]);
@@ -51,6 +80,7 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
   const [pdfSelection, setPdfSelection] = useState<{ text: string; pageNumber: number; rects: CommentPositionRect[] } | null>(null);
   const [floatingCommentAnchor, setFloatingCommentAnchor] = useState<{ x: number; y: number } | null>(null);
   const [worldlineNavOpen, setWorldlineNavOpen] = useState(false);
+  const [paneMode, setPaneMode] = useState<PaneMode>('pdf');
 
   const handleRequestAddComment = useCallback((anchor: { x: number; y: number }) => {
     setFloatingCommentAnchor(anchor);
@@ -115,6 +145,43 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
     setFloatingCommentAnchor(null);
     setCurrentTier(isSavedPaper(paper) ? paper.tier : null);
   }, [loadComments, loadPaperTags, paper]);
+
+  // The chosen layout persists across papers — flipping back and forth is the
+  // whole point — except for uploads, which can never have a walkthrough and
+  // would otherwise strand the reader in a pane with no toggle to leave it.
+  const canWalkthrough = !arxivId.startsWith('upload-');
+  useEffect(() => {
+    if (!canWalkthrough) setPaneMode('pdf');
+  }, [canWalkthrough]);
+  const effectiveMode: PaneMode = canWalkthrough ? paneMode : 'pdf';
+
+  /**
+   * The walkthrough pane mounts only once it has actually been shown, and stays
+   * mounted afterwards.
+   *
+   * Hiding the pane with `display: none` gives its iframe a zero-size box, and
+   * a bundle that loads in one typesets its first scene against font metrics
+   * measured as 0 — MathJax reads `offsetWidth`/`offsetHeight` — which yields
+   * equations with enormous `ex` widths and glyphs sprawling over the page.
+   * Since `pdf` is the default mode, mounting eagerly meant every walkthrough
+   * was typeset while invisible. The bundle also defends itself now (`wt.js`
+   * waits for a real box), but not mounting it into nothing is the cheaper half
+   * of the fix, and it keeps the no-reload-on-toggle behaviour intact.
+   */
+  const [walkthroughMounted, setWalkthroughMounted] = useState(false);
+  useEffect(() => {
+    if (effectiveMode !== 'pdf') setWalkthroughMounted(true);
+  }, [effectiveMode]);
+
+  // A walkthrough scene saying "this is Figure 3" drives the real PDF viewer.
+  // `currentPage` is shared across both panes, so flipping back lands there.
+  const handleWalkthroughGotoPage = useCallback((page: number) => {
+    setJumpToPage(page);
+    setCurrentPage(page);
+    // Reveal the PDF if it is not already on screen, but never *hide* the
+    // walkthrough the reader was just reading — in split mode both stay put.
+    setPaneMode(m => (m === 'walkthrough' ? 'split' : m));
+  }, []);
 
   // Notify parent when immersive mode changes
   useEffect(() => {
@@ -279,6 +346,22 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
                 <option value="4">T4</option>
               </select>
             )}
+            {canWalkthrough && (
+              <div className="pane-toggle" role="group" aria-label="Pane layout">
+                {PANE_MODES.map(({ mode, icon, label, title }) => (
+                  <button
+                    key={mode}
+                    className={`pane-toggle-btn ${effectiveMode === mode ? 'is-active' : ''}`}
+                    onClick={() => setPaneMode(mode)}
+                    title={title}
+                    aria-label={label}
+                    aria-pressed={effectiveMode === mode}
+                  >
+                    <Icon name={icon} />
+                  </button>
+                ))}
+              </div>
+            )}
             {absUrl && !arxivId.startsWith('upload-') && (
               <a
                 href={absUrl}
@@ -370,19 +453,34 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
       </div>
 
       <div className="viewer-body" ref={viewerBodyRef}>
-        <div className="viewer-pdf">
-          <PDFViewer
-            pdfUrl={saved?.pdf_path ? api.getLocalPdfUrl(saved.id) : (arxivId.startsWith('upload-') ? '' : api.getPdfProxyUrl(arxivId))}
-            onPageChange={setCurrentPage}
-            immersiveMode={immersiveMode}
-            onToggleImmersive={() => setImmersiveMode(m => !m)}
-            jumpToPage={jumpToPage}
-            onJumpApplied={() => setJumpToPage(undefined)}
-            onTextSelected={saved ? setPdfSelection : undefined}
-            onRequestAddComment={saved ? handleRequestAddComment : undefined}
-            comments={comments}
-            onDeleteComment={saved ? handleDeleteComment : undefined}
-          />
+        <div className={`viewer-pdf viewer-panes pane-mode-${effectiveMode}`}>
+          {/* Both panes stay mounted; the mode class decides which are visible.
+              Unmounting would re-parse the PDF and reload the walkthrough's
+              iframe every time the reader flipped between them. */}
+          <div className="viewer-pane viewer-pane-pdf">
+            <PDFViewer
+              pdfUrl={saved?.pdf_path ? api.getLocalPdfUrl(saved.id) : (arxivId.startsWith('upload-') ? '' : api.getPdfProxyUrl(arxivId))}
+              onPageChange={setCurrentPage}
+              immersiveMode={immersiveMode}
+              onToggleImmersive={() => setImmersiveMode(m => !m)}
+              jumpToPage={jumpToPage}
+              onJumpApplied={() => setJumpToPage(undefined)}
+              onTextSelected={saved ? setPdfSelection : undefined}
+              onRequestAddComment={saved ? handleRequestAddComment : undefined}
+              comments={comments}
+              onDeleteComment={saved ? handleDeleteComment : undefined}
+            />
+          </div>
+          {canWalkthrough && walkthroughMounted && (
+            <div className="viewer-pane viewer-pane-walkthrough">
+              <WalkthroughPane
+                arxivId={arxivId}
+                paperTitle={paper.title}
+                onGotoPage={handleWalkthroughGotoPage}
+                showNotification={showNotification}
+              />
+            </div>
+          )}
           {saved && (
             <div className="panel-zone">
               <button

@@ -10,8 +10,9 @@ import {
   DEFAULT_DARK_SCHEME_ID,
 } from '../colorSchemes';
 import { useKeybindings } from '../contexts/KeybindingsContext';
+import { backendReadyMessage } from './ChatPanel';
 import { KEYBINDING_META, type KeybindingAction, type KeybindingsConfig } from '../types/keybindings';
-import { CategoryGroup } from '../types';
+import { CategoryGroup, ChatBackendStatus } from '../types';
 
 interface Props {
   open: boolean;
@@ -92,6 +93,11 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
   const [autoSwitch, setAutoSwitch] = useState<AutoSwitchSettings>(DEFAULT_AUTO_SWITCH);
   const [similarityEnabled, setSimilarityEnabled] = useState(false);
   const [similarityThreshold, setSimilarityThreshold] = useState(0.82);
+  const [walkthrough, setWalkthrough] = useState<api.WalkthroughSettings>(
+    api.DEFAULT_WALKTHROUGH_SETTINGS
+  );
+  const [chat, setChat] = useState<api.ChatSettings>(api.DEFAULT_CHAT_SETTINGS);
+  const [chatStatus, setChatStatus] = useState<ChatBackendStatus | null>(null);
   const [cardFontSize, setCardFontSize] = useState<number>(1);
   const [favoriteCategories, setFavoriteCategories] = useState<string[]>([]);
   const [categoryGroups, setCategoryGroups] = useState<CategoryGroup[]>([]);
@@ -122,6 +128,9 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
       }).catch(() => {
         setLoading(false);
       });
+      api.getWalkthroughSettings().then(setWalkthrough).catch(() => {});
+      api.getChatSettings().then(setChat).catch(() => {});
+      api.getChatBackendStatus().then(setChatStatus).catch(() => setChatStatus(null));
       if (categoryGroups.length === 0) {
         api.getCategories().then(setCategoryGroups).catch(() => {});
       }
@@ -181,6 +190,8 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
         favoriteCategories,
         autoSwitch,
       });
+      await api.saveWalkthroughSettings(walkthrough);
+      await api.saveChatSettings(chat);
       api.applyCardFontSize(cardFontSize);
       showNotification('Settings saved');
       onClose();
@@ -494,6 +505,194 @@ export default function SettingsModal({ open, onClose, showNotification }: Props
                 <p className="settings-hint">
                   Default: 0.82. Lower = more matches (less strict), Higher = fewer matches (more strict).
                   Only the fallback bar for small (&lt;2 member) threads; larger threads self-calibrate.
+                </p>
+              </div>
+            </div>
+
+            <div className="settings-section" style={{ marginTop: 24 }}>
+              <h3>Chat</h3>
+              <p className="settings-description">
+                Paper chat runs on the Claude Code CLI with the paper's LaTeX source as context —
+                about half the tokens of the PDF, and the half that survives is the author's macros,
+                labelled equations and real section structure. The CLI's prompt cache lasts an hour
+                rather than five minutes, which is what reading a paper actually looks like.
+              </p>
+
+              {chatStatus && (
+                <p className={`settings-hint chat-backend-status ${chatStatus.ready ? 'ok' : 'bad'}`}>
+                  {chatStatus.ready
+                    ? chatStatus.backend === 'cli'
+                      ? `Ready — CLI ${chatStatus.cli.version ?? ''} signed in via ${chatStatus.auth.method ?? 'unknown'}${chatStatus.auth.subscription ? ` (${chatStatus.auth.subscription})` : ''}`
+                      : 'Ready — API key configured'
+                    : backendReadyMessage(chatStatus)}
+                </p>
+              )}
+
+              <div className="settings-field">
+                <label>Backend</label>
+                <select
+                  className="settings-select"
+                  value={chat.backend}
+                  onChange={e => setChat(c => ({ ...c, backend: e.target.value as 'cli' | 'api' }))}
+                >
+                  <option value="cli">Claude Code CLI (bills your plan, no API key)</option>
+                  <option value="api">Anthropic API (bills your API account)</option>
+                </select>
+                <p className="settings-hint">
+                  The CLI keeps the conversation on disk and resumes it, so the paper is sent once
+                  and read from cache thereafter. The API backend has no session store: it re-sends
+                  the paper and the transcript every turn, against a 5-minute cache.
+                </p>
+              </div>
+
+              <div className="settings-field">
+                <label>Context</label>
+                <select
+                  className="settings-select"
+                  value={chat.contextMode}
+                  onChange={e => setChat(c => ({ ...c, contextMode: e.target.value as 'tex' | 'pdf' }))}
+                >
+                  <option value="tex">LaTeX source (falls back to the PDF)</option>
+                  <option value="pdf">PDF</option>
+                </select>
+                <p className="settings-hint">
+                  A preference, not a guarantee: a PDF-only arXiv submission and every uploaded
+                  paper fall back to the PDF regardless. The mode actually used is shown in the chat
+                  panel. TeX gives up figure images and page numbers — answers cite sections and
+                  equation labels instead.
+                </p>
+              </div>
+
+              <div className="settings-field">
+                <label>Model</label>
+                <select
+                  className="settings-select"
+                  value={chat.model}
+                  onChange={e => setChat(c => ({ ...c, model: e.target.value }))}
+                >
+                  <option value="claude-opus-5">Opus 5</option>
+                  <option value="claude-sonnet-5">Sonnet 5</option>
+                  <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+                </select>
+              </div>
+
+              <div className="settings-field">
+                <label>Effort</label>
+                <select
+                  className="settings-select"
+                  value={chat.effort}
+                  onChange={e =>
+                    setChat(c => ({ ...c, effort: e.target.value as 'low' | 'medium' | 'high' }))
+                  }
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium (recommended)</option>
+                  <option value="high">High</option>
+                </select>
+                <p className="settings-hint">
+                  Opus 5 is unusually strong at lower effort and this is reading comprehension, not
+                  proof search.
+                </p>
+              </div>
+
+              <p className="settings-hint">
+                These apply to <strong>new conversations only</strong>. An existing one keeps the
+                model, backend and system prompt it was created with — resuming under different ones
+                would miss the cache and re-send the whole paper.
+              </p>
+            </div>
+
+            <div className="settings-section" style={{ marginTop: 24 }}>
+              <h3>Walkthrough</h3>
+              <p className="settings-description">
+                Generated interactive explainers, built from a paper's LaTeX source. Each build is
+                an agentic run costing real money, so it is always per-paper and on request — there
+                is deliberately no bulk or background generation.
+              </p>
+
+              <div className="settings-field">
+                <label>Backend</label>
+                <select
+                  className="settings-select"
+                  value={walkthrough.backend}
+                  onChange={e =>
+                    setWalkthrough(w => ({ ...w, backend: e.target.value as 'cli' | 'api' }))
+                  }
+                >
+                  <option value="cli">Claude Code CLI (bills your plan, no API key)</option>
+                  <option value="api">Anthropic API (bills your API account)</option>
+                </select>
+                <p className="settings-hint">
+                  The CLI backend runs an agentic build that can write, check and fix its own output.
+                  The API backend is single-shot with no tool loop — lower quality, for a headless
+                  deploy with no CLI.
+                </p>
+              </div>
+
+              <div className="settings-field">
+                <label>Per-build budget cap: ${walkthrough.budgetUsd.toFixed(2)}</label>
+                <div className="settings-threshold-row">
+                  <span className="settings-threshold-label">$0.50</span>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="5"
+                    step="0.25"
+                    value={walkthrough.budgetUsd}
+                    onChange={e =>
+                      setWalkthrough(w => ({ ...w, budgetUsd: parseFloat(e.target.value) }))
+                    }
+                    className="settings-threshold-slider"
+                  />
+                  <span className="settings-threshold-label">$5.00</span>
+                </div>
+                <p className="settings-hint">
+                  A hard ceiling passed to the build as <code>--max-budget-usd</code>. This is the
+                  guardrail that makes an agentic loop safe to put behind a button.
+                </p>
+              </div>
+
+              <div className="settings-field">
+                <label>Build effort</label>
+                <select
+                  className="settings-select"
+                  value={walkthrough.effort}
+                  onChange={e =>
+                    setWalkthrough(w => ({
+                      ...w,
+                      effort: e.target.value as 'low' | 'medium' | 'high',
+                    }))
+                  }
+                >
+                  <option value="high">High — the one place it earns its cost</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low — cheapest, roughest</option>
+                </select>
+              </div>
+
+              <div className="settings-field">
+                <label>
+                  Offer a build on Scout findings scoring{' '}
+                  {walkthrough.scoutThreshold === 0 ? '— never' : `${walkthrough.scoutThreshold}+`}
+                </label>
+                <div className="settings-threshold-row">
+                  <span className="settings-threshold-label">off</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={walkthrough.scoutThreshold}
+                    onChange={e =>
+                      setWalkthrough(w => ({ ...w, scoutThreshold: parseInt(e.target.value, 10) }))
+                    }
+                    className="settings-threshold-slider"
+                  />
+                  <span className="settings-threshold-label">100</span>
+                </div>
+                <p className="settings-hint">
+                  Adds a "Walkthrough" shortcut to strongly-flagged papers in the browse list. It
+                  only offers — nothing is ever built without you pressing the button.
                 </p>
               </div>
             </div>

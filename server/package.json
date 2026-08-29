@@ -9,8 +9,10 @@
     "verify:similarity": "tsx scripts/verify-similarity.ts",
     "verify:specter2": "tsx scripts/verify-specter2.ts",
     "verify:scout": "tsx scripts/verify-scout.ts",
+    "verify:chat": "tsx scripts/verify-chat.ts",
     "verify:autotrim": "tsx scripts/verify-autotrim.ts",
-    "diagnose": "tsx scripts/diagnose-worldlines.ts"
+    "diagnose": "tsx scripts/diagnose-worldlines.ts",
+    "verify:walkthrough": "tsx scripts/verify-walkthrough.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",
@@ -19,9 +21,11 @@
     "better-sqlite3": "^11.7.0",
     "cors": "^2.8.5",
     "express": "^4.21.1",
+    "mathjax": "^3.2.2",
     "multer": "^2.1.1",
     "onnxruntime-node": "^1.21.0",
     "sharp": "^0.34.5",
+    "three": "^0.185.1",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {

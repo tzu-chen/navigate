@@ -8,11 +8,12 @@ import papersRoutes from './routes/papers';
 import tagsRoutes from './routes/tags';
 import exportRoutes from './routes/export';
 import authorsRoutes from './routes/authors';
-import chatRoutes from './routes/chat';
+import chatRoutes, { sweepChatSessions } from './routes/chat';
 import worldlinesRoutes from './routes/worldlines';
 import settingsRoutes from './routes/settings';
 import scribeRoutes from './routes/scribe';
 import scoutRoutes from './routes/scout';
+import walkthroughRoutes from './routes/walkthrough';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3001', 10);
@@ -33,6 +34,7 @@ app.use('/api/worldlines', worldlinesRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/scribe', scribeRoutes);
 app.use('/api/scout', scoutRoutes);
+app.use('/api/walkthrough', walkthroughRoutes);
 
 // Serve static frontend in production
 const clientBuildPath = path.join(__dirname, '..', '..', 'client', 'dist');
@@ -44,6 +46,9 @@ app.get('*', (_req, res) => {
 // Initialize database and start server
 initializeDatabase();
 initializePdfStorage();
+// The CLI keeps a transcript per chat session on disk and nothing else prunes
+// them; sessions deleted in the app reap theirs directly, this catches the rest.
+sweepChatSessions();
 console.log('Database initialized');
 
 app.listen(PORT, HOST, () => {

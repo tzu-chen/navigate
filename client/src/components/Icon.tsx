@@ -23,6 +23,9 @@ type IconName =
   | 'arrow-left'
   | 'sidebar-left'
   | 'sidebar-right'
+  | 'pane-pdf'
+  | 'pane-split'
+  | 'pane-walkthrough'
   | 'eye'
   | 'plus'
   | 'crop';
@@ -102,6 +105,28 @@ const paths: Record<IconName, React.ReactNode> = {
     <>
       <rect x="2" y="2" width="12" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.2" fill="none" />
       <line x1="6" y1="2" x2="6" y2="14" stroke="currentColor" strokeWidth="1.2" />
+    </>
+  ),
+  // Layout toggles. The clearest icon for "which pane am I looking at" is the
+  // layout itself: a frame with the active side filled. Read as a set,
+  // left-filled / both-outlined / right-filled is unambiguous at 14px in a way
+  // that a document-vs-sparkle pairing is not.
+  'pane-pdf': (
+    <>
+      <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2" fill="none" />
+      <rect x="2.6" y="3.6" width="5.2" height="8.8" rx="1" fill="currentColor" opacity="0.9" />
+    </>
+  ),
+  'pane-split': (
+    <>
+      <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2" fill="none" />
+      <line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" strokeWidth="1.2" />
+    </>
+  ),
+  'pane-walkthrough': (
+    <>
+      <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2" fill="none" />
+      <rect x="8.2" y="3.6" width="5.2" height="8.8" rx="1" fill="currentColor" opacity="0.9" />
     </>
   ),
   'sidebar-right': (

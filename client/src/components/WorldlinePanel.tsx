@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as d3 from 'd3';
 import Markdown from 'react-markdown';
-import { SavedPaper, Worldline, ChatMessage, WorldlineChatSession } from '../types';
+import { SavedPaper, Worldline, ChatBackendStatus, ChatMessage, WorldlineChatSession } from '../types';
 import * as api from '../services/api';
+import { backendReadyMessage } from './ChatPanel';
 import LaTeX from './LaTeX';
 import Icon from './Icon';
 import { DEFAULT_ENTITY_COLOR } from '../palette';
@@ -60,7 +61,11 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
   const [wlChatSessionId, setWlChatSessionId] = useState<string | null>(null);
   const [wlChatSessions, setWlChatSessions] = useState<WorldlineChatSession[]>([]);
   const [wlChatShowHistory, setWlChatShowHistory] = useState(false);
-  const [wlHasApiKey, setWlHasApiKey] = useState(false);
+  const [wlChatBackend, setWlChatBackend] = useState<ChatBackendStatus | null>(null);
+  /** The answer as it arrives, before the turn commits. */
+  const [wlStreamingText, setWlStreamingText] = useState('');
+  const [wlUsingCli, setWlUsingCli] = useState(true);
+  const wlChatAbortRef = useRef<(() => void) | null>(null);
   const wlChatEndRef = useRef<HTMLDivElement>(null);
 
   // Collapsible sections
@@ -585,7 +590,9 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
 
   // Check API key on mount
   useEffect(() => {
-    api.getSettings().then(s => setWlHasApiKey(!!s.claudeApiKey)).catch(() => {});
+    // On the `cli` backend there is no key to check; what matters is whether the
+    // binary is present and logged in.
+    api.getChatBackendStatus().then(setWlChatBackend).catch(() => setWlChatBackend(null));
   }, []);
 
   // Load worldline chat sessions when active worldline changes
@@ -613,37 +620,23 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
   // Scroll chat to bottom when messages change
   useEffect(() => {
     wlChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [wlChatMessages]);
+  }, [wlChatMessages, wlStreamingText]);
 
   const generateId = (): string => {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   };
 
-  const persistWlChatSession = useCallback(async (sessionMessages: ChatMessage[], sessionId: string | null) => {
-    if (!sessionId || sessionMessages.length === 0 || activeWorldlineId === null) return;
-    const wl = worldlines.find(w => w.id === activeWorldlineId);
-    if (!wl) return;
-    const existing = await api.getWorldlineChatSession(sessionId);
-    const session: WorldlineChatSession = {
-      id: sessionId,
-      worldlineId: activeWorldlineId,
-      worldlineName: wl.name,
-      messages: sessionMessages,
-      createdAt: existing?.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    await api.saveWorldlineChatSession(session);
-    const updated = await api.getWorldlineChatSessions(activeWorldlineId);
-    setWlChatSessions(updated);
-  }, [activeWorldlineId, worldlines]);
-
+  /**
+   * One turn, on the same streaming path as paper chat: the server owns the
+   * model session and persists both messages, so the request is
+   * `{ sessionId, message, worldlineContext }` and nothing is saved afterwards.
+   */
   const handleWlChatSend = async () => {
     const trimmed = wlChatInput.trim();
     if (!trimmed || wlChatLoading || activeWorldlineId === null) return;
 
-    const settings = await api.getSettings();
-    if (!settings.claudeApiKey) {
-      showNotification('Please set your Claude API key in Settings first.');
+    if (wlChatBackend && !wlChatBackend.ready) {
+      showNotification(backendReadyMessage(wlChatBackend));
       return;
     }
 
@@ -670,46 +663,42 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
     setWlChatMessages(updatedMessages);
     setWlChatInput('');
     setWlChatLoading(true);
+    setWlStreamingText('');
 
-    try {
-      const response = await api.sendWorldlineChatMessage(
-        updatedMessages,
-        settings.claudeApiKey,
-        { worldlineName: wl.name, papers: paperContexts }
+    await new Promise<void>(resolve => {
+      wlChatAbortRef.current = api.streamWorldlineChatMessage(
+        currentSessionId!,
+        trimmed,
+        { worldlineId: activeWorldlineId, worldlineName: wl.name, papers: paperContexts },
+        {
+          onMeta: meta => setWlUsingCli(meta.backend === 'cli'),
+          onDelta: text => setWlStreamingText(prev => prev + text),
+          onDone: result => {
+            setWlUsingCli(result.backend === 'cli');
+            setWlChatMessages([
+              ...updatedMessages,
+              { role: 'assistant', content: result.message, usage: result.usage },
+            ]);
+            setWlStreamingText('');
+            resolve();
+          },
+          onError: message => {
+            showNotification(message);
+            setWlChatMessages([
+              ...updatedMessages,
+              { role: 'assistant', content: `Error: ${message}` },
+            ]);
+            setWlStreamingText('');
+            resolve();
+          },
+        }
       );
+    });
 
-      const usage = response.usage;
-      let estimatedCost: number | undefined;
-      if (usage) {
-        const inputCost = (usage.input_tokens / 1_000_000) * 3;
-        const outputCost = (usage.output_tokens / 1_000_000) * 15;
-        estimatedCost = inputCost + outputCost;
-      }
-
-      const assistantMessage: ChatMessage = {
-        role: 'assistant',
-        content: response.message,
-        usage: usage ? {
-          input_tokens: usage.input_tokens,
-          output_tokens: usage.output_tokens,
-          cache_creation_input_tokens: usage.cache_creation_input_tokens,
-          cache_read_input_tokens: usage.cache_read_input_tokens,
-          estimated_cost: estimatedCost,
-          model: response.model,
-        } : undefined,
-      };
-
-      const withResponse = [...updatedMessages, assistantMessage];
-      setWlChatMessages(withResponse);
-      await persistWlChatSession(withResponse, currentSessionId);
-    } catch (err: any) {
-      showNotification(err.message || 'Failed to get response from Claude');
-      const withError = [...updatedMessages, { role: 'assistant' as const, content: 'Error: Failed to get a response. Please check your API key in Settings.' }];
-      setWlChatMessages(withError);
-      await persistWlChatSession(withError, currentSessionId);
-    } finally {
-      setWlChatLoading(false);
-    }
+    wlChatAbortRef.current = null;
+    setWlChatLoading(false);
+    const updated = await api.getWorldlineChatSessions(activeWorldlineId);
+    setWlChatSessions(updated);
   };
 
   const handleWlChatKeyDown = (e: React.KeyboardEvent) => {
@@ -995,10 +984,8 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
                   <h4>Chat: {activeWorldline.name}</h4>
                 </div>
 
-                {!wlHasApiKey && (
-                  <div className="wl-chat-no-key">
-                    Set your Claude API key in Settings to use chat.
-                  </div>
+                {wlChatBackend && !wlChatBackend.ready && (
+                  <div className="wl-chat-no-key">{backendReadyMessage(wlChatBackend)}</div>
                 )}
 
                 {/* Session toolbar */}
@@ -1041,7 +1028,7 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
                 )}
 
                 <div className="wl-chat-messages">
-                  {wlChatMessages.length === 0 && wlHasApiKey && (
+                  {wlChatMessages.length === 0 && !wlStreamingText && (
                     <div className="wl-chat-welcome">
                       <p>Ask Claude about this worldline. Examples:</p>
                       <ul>
@@ -1069,9 +1056,17 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
                           {msg.usage.model && <span>{msg.usage.model}</span>}
                           <span>{msg.usage.input_tokens.toLocaleString()} in / {msg.usage.output_tokens.toLocaleString()} out</span>
                           {msg.usage.estimated_cost !== undefined && (
-                            <span>${msg.usage.estimated_cost < 0.01
-                              ? msg.usage.estimated_cost.toFixed(4)
-                              : msg.usage.estimated_cost.toFixed(3)}</span>
+                            <span
+                              title={
+                                wlUsingCli
+                                  ? 'List-price equivalent of work billed to the Claude Code plan, not money charged to an API account.'
+                                  : 'Estimated API cost at list price.'
+                              }
+                            >
+                              {wlUsingCli ? '≈' : ''}${msg.usage.estimated_cost < 0.01
+                                ? msg.usage.estimated_cost.toFixed(4)
+                                : msg.usage.estimated_cost.toFixed(3)}
+                            </span>
                           )}
                         </div>
                       )}
@@ -1081,9 +1076,13 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
                   {wlChatLoading && (
                     <div className="wl-chat-message wl-chat-message-assistant">
                       <div className="wl-chat-message-label">Claude</div>
-                      <div className="wl-chat-message-content wl-chat-typing">
-                        Thinking...
-                      </div>
+                      {wlStreamingText ? (
+                        <div className="wl-chat-message-content markdown-body chat-streaming">
+                          <Markdown>{wlStreamingText}</Markdown>
+                        </div>
+                      ) : (
+                        <div className="wl-chat-message-content wl-chat-typing">Thinking...</div>
+                      )}
                     </div>
                   )}
 
@@ -1096,14 +1095,22 @@ export default function WorldlinePanel({ papers, showNotification, onRefresh, on
                     value={wlChatInput}
                     onChange={e => setWlChatInput(e.target.value)}
                     onKeyDown={handleWlChatKeyDown}
-                    placeholder={wlHasApiKey ? 'Ask about this worldline...' : 'Set API key in Settings first'}
+                    placeholder={
+                      wlChatBackend && !wlChatBackend.ready
+                        ? 'Chat backend is not ready — see Settings'
+                        : 'Ask about this worldline...'
+                    }
                     rows={2}
-                    disabled={!wlHasApiKey || wlChatLoading}
+                    disabled={(wlChatBackend ? !wlChatBackend.ready : false) || wlChatLoading}
                   />
                   <button
                     className="btn btn-primary btn-sm"
                     onClick={handleWlChatSend}
-                    disabled={!wlChatInput.trim() || wlChatLoading || !wlHasApiKey}
+                    disabled={
+                      !wlChatInput.trim() ||
+                      wlChatLoading ||
+                      (wlChatBackend ? !wlChatBackend.ready : false)
+                    }
                   >
                     Send
                   </button>

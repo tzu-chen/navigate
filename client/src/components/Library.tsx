@@ -64,6 +64,23 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
 ];
 
 export default function Library({ papers, tags, onOpenPaper, onRefresh, showNotification, favoriteAuthorNames, onFavoriteAuthor, onSearchAuthor }: Props) {
+  // Which papers have a walkthrough. A small indicator only — there is
+  // deliberately no bulk build: an agentic run per paper is exactly how a cost
+  // surprise happens.
+  const [walkthroughIds, setWalkthroughIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getWalkthroughIndicators()
+      .then(rows => {
+        if (!cancelled) {
+          setWalkthroughIds(new Set(rows.filter(r => r.status === 'ready').map(r => r.arxiv_id)));
+        }
+      })
+      .catch(() => { /* the badge is decoration; its absence is not an error */ });
+    return () => { cancelled = true; };
+  }, [papers.length]);
+
   const [filterTag, setFilterTag] = useState<number | null>(null);
   const [filterWorldline, setFilterWorldline] = useState<number | null>(null);
   const [filterTier, setFilterTier] = useState<TierFilter>(null);
@@ -796,6 +813,14 @@ export default function Library({ papers, tags, onOpenPaper, onRefresh, showNoti
                     <div className="paper-select-title">
                       <h3 className="paper-title">
                         <LaTeX>{paper.title}</LaTeX>
+                        {walkthroughIds.has(paper.arxiv_id) && (
+                          <span
+                            className="walkthrough-badge"
+                            title="An interactive walkthrough has been built for this paper"
+                          >
+                            ◈
+                          </span>
+                        )}
                       </h3>
                     </div>
                   </div>

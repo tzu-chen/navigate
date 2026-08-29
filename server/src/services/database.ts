@@ -182,6 +182,44 @@ export function initializeDatabase(): void {
         CHECK(disposition IN ('library', 'scribe', 'removed'))
     );
 
+    -- Generated interactive walkthroughs. Keyed by arxiv_id with **no foreign
+    -- key to papers**, deliberately, for the reason paper_archive has none: a
+    -- walkthrough costs minutes and dollars to build and must survive the paper
+    -- being handed to Scribe or deleted. Removing one is a separate, explicit act.
+    CREATE TABLE IF NOT EXISTS walkthroughs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      arxiv_id TEXT NOT NULL,
+      source_version TEXT,
+      source_sha TEXT,
+      contract_version TEXT,
+      -- sha256(source_hash | outline_hash | contract_version). Identical source,
+      -- identical outline and identical contract must return the stored bundle.
+      cache_key TEXT NOT NULL,
+      status TEXT NOT NULL
+        CHECK(status IN ('pending', 'building', 'ready', 'failed', 'unfit')),
+      fitness TEXT CHECK(fitness IS NULL OR fitness IN ('strong', 'partial', 'none')),
+      outline TEXT,
+      bundle_path TEXT,
+      warnings TEXT,
+      model TEXT,
+      backend TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_creation_input_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      -- estimated_cost is the row's total; the two stage columns say where it went.
+      outline_cost REAL,
+      build_cost REAL,
+      estimated_cost REAL,
+      error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_walkthroughs_cache_key ON walkthroughs(cache_key);
+    CREATE INDEX IF NOT EXISTS idx_walkthroughs_arxiv_id ON walkthroughs(arxiv_id);
+    CREATE INDEX IF NOT EXISTS idx_walkthroughs_status ON walkthroughs(status);
+
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_arxiv_id ON chat_sessions(arxiv_id);
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_worldline_id ON chat_sessions(worldline_id);
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_type ON chat_sessions(session_type);
@@ -233,6 +271,28 @@ export function initializeDatabase(): void {
     db.exec("ALTER TABLE scout_runs ADD COLUMN backend TEXT NOT NULL DEFAULT 'api'");
   }
 
+  // Migration: the chat backend's frozen-per-session state.
+  //
+  // `system_prompt` is the load-bearing column. The prompt used to be rebuilt on
+  // every request and embeds the paper's worldline siblings, so adding the paper
+  // to a thread mid-conversation silently changed the prefix. On the API path
+  // that is a cache miss; on the CLI path it is a ~17x cost multiplier that
+  // raises no error, and it also means the model's stated context stops matching
+  // what it was actually given. Freeze at creation, replay verbatim, and let a
+  // new session pick up the new context.
+  const chatColumns = db.prepare("PRAGMA table_info('chat_sessions')").all() as { name: string }[];
+  for (const [column, type] of [
+    ['cli_session_id', 'TEXT'],   // the uuid passed to --session-id
+    ['context_mode', 'TEXT'],     // 'tex' | 'pdf' | 'abstract'
+    ['system_prompt', 'TEXT'],    // frozen at creation, replayed verbatim
+    ['backend', 'TEXT'],          // 'cli' | 'api'
+    ['model', 'TEXT'],
+  ] as const) {
+    if (!chatColumns.some(c => c.name === column)) {
+      db.exec(`ALTER TABLE chat_sessions ADD COLUMN ${column} ${type}`);
+    }
+  }
+
   // Backfill the ever-saved ledger from the current library. Papers deleted
   // before the ledger existed are unrecoverable, but everything still held is
   // enrolled here once, so nothing is lost from this point on.
@@ -243,6 +303,22 @@ export function initializeDatabase(): void {
            COALESCE(added_at, datetime('now')), 'library'
     FROM papers
   `);
+
+  // A build is an out-of-process agentic run tracked only by an in-memory job
+  // registry. A server restart mid-build therefore orphans its row forever, so
+  // any 'building' row that survived a restart is by definition dead.
+  const reaped = db
+    .prepare(
+      `UPDATE walkthroughs
+          SET status = 'failed',
+              error = 'Build was interrupted by a server restart.',
+              updated_at = datetime('now')
+        WHERE status = 'building'`
+    )
+    .run();
+  if (reaped.changes > 0) {
+    console.log(`[navigate] reaped ${reaped.changes} interrupted walkthrough build(s)`);
+  }
 }
 
 // Paper operations
@@ -917,6 +993,78 @@ export function getChatSession(id: string) {
   return db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id);
 }
 
+/** The chat backend's per-session state, frozen at the session's first message. */
+export interface ChatSessionPriming {
+  cli_session_id: string | null;
+  context_mode: string | null;
+  system_prompt: string | null;
+  backend: string | null;
+  model: string | null;
+}
+
+export function getChatSessionPriming(id: string): ChatSessionPriming | undefined {
+  return db
+    .prepare(
+      'SELECT cli_session_id, context_mode, system_prompt, backend, model FROM chat_sessions WHERE id = ?'
+    )
+    .get(id) as ChatSessionPriming | undefined;
+}
+
+/**
+ * Freeze a session's prefix. Written once, when the session is first primed, and
+ * then only to swap `cli_session_id` after a re-prime — never to update the
+ * prompt, which is the whole point of storing it.
+ */
+export function setChatSessionPriming(
+  id: string,
+  priming: {
+    cli_session_id: string | null;
+    context_mode: string;
+    system_prompt: string;
+    backend: string;
+    model: string;
+  }
+) {
+  return db
+    .prepare(
+      `UPDATE chat_sessions
+          SET cli_session_id = @cli_session_id,
+              context_mode = @context_mode,
+              system_prompt = @system_prompt,
+              backend = @backend,
+              model = @model,
+              updated_at = datetime('now')
+        WHERE id = @id`
+    )
+    .run({ id, ...priming });
+}
+
+/** Point a session at a new CLI conversation after the old one went missing. */
+export function setChatSessionCliId(id: string, cliSessionId: string | null) {
+  return db
+    .prepare('UPDATE chat_sessions SET cli_session_id = ? WHERE id = ?')
+    .run(cliSessionId, id);
+}
+
+/** Every CLI conversation a live session still depends on — the sweep's keep-list. */
+export function getLiveCliSessionIds(): string[] {
+  return (
+    db
+      .prepare('SELECT cli_session_id FROM chat_sessions WHERE cli_session_id IS NOT NULL')
+      .all() as { cli_session_id: string }[]
+  ).map(r => r.cli_session_id);
+}
+
+export function getCliSessionIdsForPaper(arxivId: string): string[] {
+  return (
+    db
+      .prepare(
+        "SELECT cli_session_id FROM chat_sessions WHERE arxiv_id = ? AND session_type = 'paper' AND cli_session_id IS NOT NULL"
+      )
+      .all(arxivId) as { cli_session_id: string }[]
+  ).map(r => r.cli_session_id);
+}
+
 export function getChatSessionsByArxivId(arxivId: string) {
   return db.prepare(
     'SELECT * FROM chat_sessions WHERE arxiv_id = ? AND session_type = ? ORDER BY updated_at DESC'
@@ -1012,3 +1160,193 @@ export function deleteSetting(key: string) {
 }
 
 export default db;
+
+// Walkthrough operations
+//
+// Rows are per (source, outline, contract) triple, which is what `cache_key`
+// hashes. Multiple rows per paper are expected and wanted: a rebuild after an
+// outline edit is a new row, and the previous build survives it, because a
+// previous build is sometimes the better one and re-rolling should not destroy
+// it. The viewer opens the newest `ready` row and can reach the older ones.
+
+export type WalkthroughStatus = 'pending' | 'building' | 'ready' | 'failed' | 'unfit';
+export type WalkthroughFitness = 'strong' | 'partial' | 'none';
+
+export interface WalkthroughRow {
+  id: number;
+  arxiv_id: string;
+  source_version: string | null;
+  source_sha: string | null;
+  contract_version: string | null;
+  cache_key: string;
+  status: WalkthroughStatus;
+  fitness: WalkthroughFitness | null;
+  outline: string | null;
+  bundle_path: string | null;
+  warnings: string | null;
+  model: string | null;
+  backend: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  outline_cost: number | null;
+  build_cost: number | null;
+  estimated_cost: number | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function getWalkthrough(id: number): WalkthroughRow | undefined {
+  return db.prepare('SELECT * FROM walkthroughs WHERE id = ?').get(id) as WalkthroughRow | undefined;
+}
+
+export function getWalkthroughByCacheKey(cacheKey: string): WalkthroughRow | undefined {
+  return db.prepare('SELECT * FROM walkthroughs WHERE cache_key = ?').get(cacheKey) as
+    | WalkthroughRow
+    | undefined;
+}
+
+export function getWalkthroughsByArxivId(arxivId: string): WalkthroughRow[] {
+  return db
+    .prepare('SELECT * FROM walkthroughs WHERE arxiv_id = ? ORDER BY created_at DESC, id DESC')
+    .all(arxivId) as WalkthroughRow[];
+}
+
+/** What the viewer opens for a paper: the newest build that actually succeeded. */
+export function getLatestReadyWalkthrough(arxivId: string): WalkthroughRow | undefined {
+  return db
+    .prepare(
+      `SELECT * FROM walkthroughs
+        WHERE arxiv_id = ? AND status = 'ready'
+        ORDER BY created_at DESC, id DESC LIMIT 1`
+    )
+    .get(arxivId) as WalkthroughRow | undefined;
+}
+
+/** Which papers have a usable walkthrough — one query for the Library indicator. */
+export function getWalkthroughArxivIds(): { arxiv_id: string; status: string }[] {
+  return db
+    .prepare(
+      `SELECT arxiv_id, MAX(status = 'ready') AS ready,
+              CASE WHEN MAX(status = 'ready') THEN 'ready' ELSE MIN(status) END AS status
+         FROM walkthroughs
+        GROUP BY arxiv_id`
+    )
+    .all() as { arxiv_id: string; status: string }[];
+}
+
+export function createWalkthrough(row: {
+  arxiv_id: string;
+  source_version: string | null;
+  source_sha: string | null;
+  contract_version: string;
+  cache_key: string;
+  status: WalkthroughStatus;
+  fitness: WalkthroughFitness | null;
+  outline: string | null;
+  warnings: string | null;
+  model: string | null;
+  backend: string | null;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  outline_cost?: number;
+}): number {
+  const result = db
+    .prepare(
+      `INSERT INTO walkthroughs
+         (arxiv_id, source_version, source_sha, contract_version, cache_key, status, fitness,
+          outline, warnings, model, backend, input_tokens, output_tokens,
+          cache_creation_input_tokens, cache_read_input_tokens, outline_cost, estimated_cost)
+       VALUES
+         (@arxiv_id, @source_version, @source_sha, @contract_version, @cache_key, @status, @fitness,
+          @outline, @warnings, @model, @backend, @input_tokens, @output_tokens,
+          @cache_creation_input_tokens, @cache_read_input_tokens, @outline_cost, @outline_cost)`
+    )
+    .run({
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      outline_cost: 0,
+      ...row,
+    });
+  return result.lastInsertRowid as number;
+}
+
+/** Replace a not-yet-built row's outline in place, re-keying it. */
+export function updateWalkthroughOutline(
+  id: number,
+  outline: string,
+  cacheKey: string,
+  fitness: WalkthroughFitness | null
+): void {
+  db.prepare(
+    `UPDATE walkthroughs
+        SET outline = ?, cache_key = ?, fitness = ?, status = 'pending',
+            error = NULL, updated_at = datetime('now')
+      WHERE id = ?`
+  ).run(outline, cacheKey, fitness, id);
+}
+
+export function setWalkthroughStatus(
+  id: number,
+  status: WalkthroughStatus,
+  error: string | null = null
+): void {
+  db.prepare(
+    `UPDATE walkthroughs SET status = ?, error = ?, updated_at = datetime('now') WHERE id = ?`
+  ).run(status, error, id);
+}
+
+/** Record a completed build. Token counts accumulate across the row's model calls. */
+export function completeWalkthroughBuild(
+  id: number,
+  build: {
+    bundle_path: string;
+    model: string;
+    backend: string;
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens: number;
+    cache_read_input_tokens: number;
+    build_cost: number;
+    warnings: string | null;
+  }
+): void {
+  db.prepare(
+    `UPDATE walkthroughs
+        SET status = 'ready',
+            bundle_path = @bundle_path,
+            model = @model,
+            backend = @backend,
+            input_tokens = COALESCE(input_tokens, 0) + @input_tokens,
+            output_tokens = COALESCE(output_tokens, 0) + @output_tokens,
+            cache_creation_input_tokens =
+              COALESCE(cache_creation_input_tokens, 0) + @cache_creation_input_tokens,
+            cache_read_input_tokens =
+              COALESCE(cache_read_input_tokens, 0) + @cache_read_input_tokens,
+            build_cost = @build_cost,
+            estimated_cost = COALESCE(outline_cost, 0) + @build_cost,
+            warnings = COALESCE(@warnings, warnings),
+            error = NULL,
+            updated_at = datetime('now')
+      WHERE id = @id`
+  ).run({ id, ...build });
+}
+
+export function deleteWalkthrough(id: number): { bundle_path: string | null } | null {
+  const row = getWalkthrough(id);
+  if (!row) return null;
+  db.prepare('DELETE FROM walkthroughs WHERE id = ?').run(id);
+  return { bundle_path: row.bundle_path };
+}
+
+export function getWalkthroughRuns(limit = 50): WalkthroughRow[] {
+  return db
+    .prepare('SELECT * FROM walkthroughs ORDER BY created_at DESC, id DESC LIMIT ?')
+    .all(limit) as WalkthroughRow[];
+}

