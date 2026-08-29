@@ -439,12 +439,14 @@
     var wrap = document.createElement('div');
     wrap.className = 'wt-equation';
     var body = document.createElement('div');
+    body.className = 'wt-equation-body';
     body.textContent = '\\[' + latex + '\\]';
     wrap.appendChild(body);
     if (label) {
       var tag = document.createElement('span');
       tag.className = 'wt-equation-label';
       tag.textContent = label;
+      tag.title = label; // the tag truncates when long; keep the full text reachable
       wrap.appendChild(tag);
     }
     return wrap;

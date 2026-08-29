@@ -12,7 +12,8 @@
     "verify:chat": "tsx scripts/verify-chat.ts",
     "verify:autotrim": "tsx scripts/verify-autotrim.ts",
     "diagnose": "tsx scripts/diagnose-worldlines.ts",
-    "verify:walkthrough": "tsx scripts/verify-walkthrough.ts"
+    "verify:walkthrough": "tsx scripts/verify-walkthrough.ts",
+    "migrate:bundles": "tsx scripts/migrate-bundles.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",

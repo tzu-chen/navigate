@@ -795,6 +795,23 @@ function makeTar(entries: { name: string; body?: string; type?: string; size?: n
     'the shared glyph cache is hard-hidden even if it is somehow created'
   );
 
+  // The equation tag used to be absolutely positioned at the right edge, so any
+  // display equation wide enough to reach that edge rendered underneath it.
+  // Giving it its own grid track makes overlap structurally impossible rather
+  // than a matter of how wide the maths happens to be.
+  ok(
+    /\.wt-equation\s*\{[^}]*display:\s*grid/.test(HELPER_CSS),
+    'the equation row is a grid, so the tag has a track of its own'
+  );
+  ok(
+    !/\.wt-equation-label\s*\{[^}]*position:\s*absolute/.test(HELPER_CSS),
+    'the equation tag is not absolutely positioned over the maths'
+  );
+  ok(
+    /\.wt-equation-body[\s,][^{]*\{[^}]*overflow-x:\s*auto/.test(HELPER_CSS),
+    'wide maths scrolls inside its own track instead of growing under the tag'
+  );
+
   // MathJax sizes its SVG from measured font metrics (`nodeSize` reads
   // offsetWidth/offsetHeight). Inside a zero-size subtree — an iframe in a
   // `display: none` pane — those measure 0, the derived `ex` collapses, and
