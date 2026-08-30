@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { SavedPaper, ArxivPaper, Comment, CommentPositionRect, Tag } from '../types';
+import { SavedPaper, ArxivPaper, Comment, CommentPositionRect, PaneMode, Tag } from '../types';
 import * as api from '../services/api';
 import PDFViewer from './PDFViewer';
 import CommentPanel from './CommentPanel';
@@ -11,6 +11,8 @@ import FloatingCommentBox from './FloatingCommentBox';
 import LaTeX from './LaTeX';
 import Icon from './Icon';
 import { useKeyboardShortcut } from '../hooks/useKeyboardShortcut';
+import { useKeybindings } from '../contexts/KeybindingsContext';
+import type { KeybindingAction } from '../types/keybindings';
 
 function isSavedPaper(paper: SavedPaper | ArxivPaper): paper is SavedPaper {
   return 'arxiv_id' in paper;
@@ -32,14 +34,19 @@ interface Props {
   onBrowseNavigate?: (paper: ArxivPaper) => void;
   onImmersiveModeChange?: (immersive: boolean) => void;
   initialPage?: number;
+  /** Which pane to land in. The gallery opens straight into the walkthrough. */
+  initialPaneMode?: PaneMode;
 }
 
 type SidebarSection = 'comments' | 'chat' | 'worldline';
+
 /**
- * The viewer's left slot. Not a new top-level ViewMode: the whole sidebar —
- * chat, comments, worldline — stays live and useful beside a walkthrough, and
- * "chat about the paper while the mechanism is on screen" is the best thing
- * this feature can offer.
+ * The left slot's three layouts. `PaneMode` itself lives in types.ts so the
+ * walkthrough gallery can name the pane a paper should open into.
+ *
+ * Not a new top-level ViewMode: the whole sidebar — chat, comments, worldline —
+ * stays live and useful beside a walkthrough, and "chat about the paper while
+ * the mechanism is on screen" is the best thing this feature can offer.
  *
  * `split` shows both at once, which is the mode that makes a walkthrough
  * genuinely useful — the point of an explainer is checking it against the paper.
@@ -50,21 +57,23 @@ type SidebarSection = 'comments' | 'chat' | 'worldline';
  * which is exactly the cost you notice when flipping back and forth. PDFViewer
  * carries a ResizeObserver and its `fitToWidth` already ignores a zero-width
  * container, so hiding and re-showing refits it correctly.
+ *
+ * Each mode also has a keybinding, so the flip that this toggle exists for does
+ * not need the pointer to leave the page.
  */
-type PaneMode = 'pdf' | 'split' | 'walkthrough';
-
 const PANE_MODES: {
   mode: PaneMode;
   icon: 'pane-pdf' | 'pane-split' | 'pane-walkthrough';
   label: string;
   title: string;
+  action: KeybindingAction;
 }[] = [
-  { mode: 'pdf', icon: 'pane-pdf', label: 'PDF', title: 'PDF only' },
-  { mode: 'split', icon: 'pane-split', label: 'Split', title: 'PDF and walkthrough side by side' },
-  { mode: 'walkthrough', icon: 'pane-walkthrough', label: 'Walkthrough', title: 'Walkthrough only' },
+  { mode: 'pdf', icon: 'pane-pdf', label: 'PDF', title: 'PDF only', action: 'viewerPanePdf' },
+  { mode: 'split', icon: 'pane-split', label: 'Split', title: 'PDF and walkthrough side by side', action: 'viewerPaneSplit' },
+  { mode: 'walkthrough', icon: 'pane-walkthrough', label: 'Walkthrough', title: 'Walkthrough only', action: 'viewerPaneWalkthrough' },
 ];
 
-export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeletePaper, showNotification, favoriteAuthorNames, onFavoriteAuthor, onSearchAuthor, onOpenPaper, browsePapers, browsePageOffset = 0, browseTotalResults = 0, onBrowseNavigate, onImmersiveModeChange, initialPage }: Props) {
+export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeletePaper, showNotification, favoriteAuthorNames, onFavoriteAuthor, onSearchAuthor, onOpenPaper, browsePapers, browsePageOffset = 0, browseTotalResults = 0, onBrowseNavigate, onImmersiveModeChange, initialPage, initialPaneMode }: Props) {
   const [comments, setComments] = useState<Comment[]>([]);
   const [paperTags, setPaperTags] = useState<Tag[]>([]);
   const [currentTier, setCurrentTier] = useState<number | null>(
@@ -80,7 +89,7 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
   const [pdfSelection, setPdfSelection] = useState<{ text: string; pageNumber: number; rects: CommentPositionRect[] } | null>(null);
   const [floatingCommentAnchor, setFloatingCommentAnchor] = useState<{ x: number; y: number } | null>(null);
   const [worldlineNavOpen, setWorldlineNavOpen] = useState(false);
-  const [paneMode, setPaneMode] = useState<PaneMode>('pdf');
+  const [paneMode, setPaneMode] = useState<PaneMode>(initialPaneMode ?? 'pdf');
 
   const handleRequestAddComment = useCallback((anchor: { x: number; y: number }) => {
     setFloatingCommentAnchor(anchor);
@@ -173,6 +182,23 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
     if (effectiveMode !== 'pdf') setWalkthroughMounted(true);
   }, [effectiveMode]);
 
+  /**
+   * Take the keyboard back when the walkthrough goes away.
+   *
+   * Focus follows the click into the sandboxed iframe, and the frame hands
+   * keystrokes back to the app by postMessage. Hiding it while it still holds
+   * focus would leave the keyboard pointed at a frame that can no longer
+   * receive anything — browsers do reset focus to the body when a focused
+   * element is hidden, but this does not depend on that, because the failure
+   * would be "the keyboard silently stops working", which is the bug this whole
+   * path exists to fix.
+   */
+  useEffect(() => {
+    if (effectiveMode !== 'pdf') return;
+    const active = document.activeElement;
+    if (active instanceof HTMLIFrameElement) active.blur();
+  }, [effectiveMode]);
+
   // A walkthrough scene saying "this is Figure 3" drives the real PDF viewer.
   // `currentPage` is shared across both panes, so flipping back lands there.
   const handleWalkthroughGotoPage = useCallback((page: number) => {
@@ -226,6 +252,18 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
 
   const toggleImmersive = useCallback(() => setImmersiveMode(m => !m), []);
   useKeyboardShortcut('pdfImmersiveToggle', toggleImmersive);
+
+  // Pane layout, by key. Flipping between the paper and its explainer is the
+  // whole point of the toggle, and it happens often enough that reaching for
+  // the pointer each time is the wrong cost. Disabled for uploads, which have
+  // no walkthrough to switch to.
+  const showPdfPane = useCallback(() => setPaneMode('pdf'), []);
+  const showSplitPane = useCallback(() => setPaneMode('split'), []);
+  const showWalkthroughPane = useCallback(() => setPaneMode('walkthrough'), []);
+  useKeyboardShortcut('viewerPanePdf', showPdfPane, canWalkthrough);
+  useKeyboardShortcut('viewerPaneSplit', showSplitPane, canWalkthrough);
+  useKeyboardShortcut('viewerPaneWalkthrough', showWalkthroughPane, canWalkthrough);
+  const { keybindings } = useKeybindings();
 
   const openWorldlineNav = useCallback(() => {
     if (saved) setWorldlineNavOpen(true);
@@ -348,12 +386,12 @@ export default function PaperViewer({ paper, isInLibrary, onSavePaper, onDeleteP
             )}
             {canWalkthrough && (
               <div className="pane-toggle" role="group" aria-label="Pane layout">
-                {PANE_MODES.map(({ mode, icon, label, title }) => (
+                {PANE_MODES.map(({ mode, icon, label, title, action }) => (
                   <button
                     key={mode}
                     className={`pane-toggle-btn ${effectiveMode === mode ? 'is-active' : ''}`}
                     onClick={() => setPaneMode(mode)}
-                    title={title}
+                    title={keybindings[action] ? `${title}  (${keybindings[action]})` : title}
                     aria-label={label}
                     aria-pressed={effectiveMode === mode}
                   >

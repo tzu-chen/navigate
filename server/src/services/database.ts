@@ -198,6 +198,10 @@ export function initializeDatabase(): void {
       status TEXT NOT NULL
         CHECK(status IN ('pending', 'building', 'ready', 'failed', 'unfit')),
       fitness TEXT CHECK(fitness IS NULL OR fitness IN ('strong', 'partial', 'none')),
+      -- The paper's title as of the outline pass. Recorded here because neither
+      -- the papers table nor the archive is guaranteed to know it: a walkthrough
+      -- outlives its paper, and can be built for one that was never saved.
+      paper_title TEXT,
       outline TEXT,
       bundle_path TEXT,
       warnings TEXT,
@@ -270,6 +274,33 @@ export function initializeDatabase(): void {
   if (scoutColumns.length > 0 && !scoutColumns.some(c => c.name === 'backend')) {
     db.exec("ALTER TABLE scout_runs ADD COLUMN backend TEXT NOT NULL DEFAULT 'api'");
   }
+
+  // Migration: a walkthrough carries its paper's title.
+  //
+  // A walkthrough deliberately has no foreign key to `papers`, and it can also
+  // be built for a paper that was never saved at all (outlined straight from a
+  // browse listing). Neither `papers` nor the ever-saved ledger is therefore a
+  // reliable place to look up its title, and the gallery had nothing to print
+  // but the arXiv id. The title the outline pass already resolved is recorded
+  // here instead. Existing rows keep NULL; the gallery still prefers the live
+  // tables, which are fresher, and falls back to this.
+  const walkthroughColumns = db
+    .prepare("PRAGMA table_info('walkthroughs')")
+    .all() as { name: string }[];
+  if (walkthroughColumns.length > 0 && !walkthroughColumns.some(c => c.name === 'paper_title')) {
+    db.exec('ALTER TABLE walkthroughs ADD COLUMN paper_title TEXT');
+  }
+  // Fill in what the local tables still know. A row whose paper was never saved
+  // (outlined straight from a browse listing) stays null and shows as its arXiv
+  // id, which is at least its true identity; new rows record the title directly.
+  db.exec(`
+    UPDATE walkthroughs
+       SET paper_title = COALESCE(
+             (SELECT title FROM papers        WHERE arxiv_id = walkthroughs.arxiv_id),
+             (SELECT title FROM paper_archive WHERE arxiv_id = walkthroughs.arxiv_id)
+           )
+     WHERE paper_title IS NULL
+  `);
 
   // Migration: the chat backend's frozen-per-session state.
   //
@@ -1181,6 +1212,8 @@ export interface WalkthroughRow {
   cache_key: string;
   status: WalkthroughStatus;
   fitness: WalkthroughFitness | null;
+  /** The paper's title as of the outline pass; null on rows written before it. */
+  paper_title: string | null;
   outline: string | null;
   bundle_path: string | null;
   warnings: string | null;
@@ -1237,6 +1270,43 @@ export function getWalkthroughArxivIds(): { arxiv_id: string; status: string }[]
     .all() as { arxiv_id: string; status: string }[];
 }
 
+/**
+ * Every walkthrough row with its paper's identity attached, for the gallery.
+ *
+ * The join is a LEFT JOIN against both `papers` and `paper_archive` because a
+ * walkthrough deliberately outlives its paper (no foreign key, same as the
+ * ledger): a paper handed to Scribe still has a walkthrough worth showing, and
+ * the archive is the only place its title survives. `paper_id` being null is
+ * therefore normal, not an error — it just means "no longer in the library".
+ */
+export interface WalkthroughGalleryRow extends WalkthroughRow {
+  /** Live tables first (they are fresher), then the row's own recorded title. */
+  resolved_title: string | null;
+  resolved_authors: string | null;
+  resolved_categories: string | null;
+  resolved_published: string | null;
+  paper_id: number | null;
+  paper_tier: number | null;
+}
+
+export function getWalkthroughGallery(): WalkthroughGalleryRow[] {
+  return db
+    .prepare(
+      `SELECT w.*,
+              COALESCE(p.title, a.title, w.paper_title) AS resolved_title,
+              COALESCE(p.authors, a.authors)            AS resolved_authors,
+              COALESCE(p.categories, a.categories)      AS resolved_categories,
+              COALESCE(p.published, a.published)        AS resolved_published,
+              p.id                                      AS paper_id,
+              p.tier                                    AS paper_tier
+         FROM walkthroughs w
+         LEFT JOIN papers p        ON p.arxiv_id = w.arxiv_id
+         LEFT JOIN paper_archive a ON a.arxiv_id = w.arxiv_id
+        ORDER BY w.created_at DESC, w.id DESC`
+    )
+    .all() as WalkthroughGalleryRow[];
+}
+
 export function createWalkthrough(row: {
   arxiv_id: string;
   source_version: string | null;
@@ -1245,6 +1315,7 @@ export function createWalkthrough(row: {
   cache_key: string;
   status: WalkthroughStatus;
   fitness: WalkthroughFitness | null;
+  paper_title: string | null;
   outline: string | null;
   warnings: string | null;
   model: string | null;
@@ -1259,11 +1330,11 @@ export function createWalkthrough(row: {
     .prepare(
       `INSERT INTO walkthroughs
          (arxiv_id, source_version, source_sha, contract_version, cache_key, status, fitness,
-          outline, warnings, model, backend, input_tokens, output_tokens,
+          paper_title, outline, warnings, model, backend, input_tokens, output_tokens,
           cache_creation_input_tokens, cache_read_input_tokens, outline_cost, estimated_cost)
        VALUES
          (@arxiv_id, @source_version, @source_sha, @contract_version, @cache_key, @status, @fitness,
-          @outline, @warnings, @model, @backend, @input_tokens, @output_tokens,
+          @paper_title, @outline, @warnings, @model, @backend, @input_tokens, @output_tokens,
           @cache_creation_input_tokens, @cache_read_input_tokens, @outline_cost, @outline_cost)`
     )
     .run({

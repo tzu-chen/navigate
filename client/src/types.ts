@@ -226,7 +226,13 @@ export interface WorldlineChatSession {
   updatedAt: string;
 }
 
-export type ViewMode = 'browse' | 'library' | 'authors' | 'viewer' | 'chatHistory' | 'worldline' | 'comments';
+export type ViewMode = 'browse' | 'library' | 'authors' | 'viewer' | 'chatHistory' | 'worldline' | 'comments' | 'walkthroughs';
+
+/**
+ * The viewer's left slot. Lives here rather than in PaperViewer because the
+ * gallery needs to say which pane a paper should open into.
+ */
+export type PaneMode = 'pdf' | 'split' | 'walkthrough';
 
 // --- Walkthroughs (generated interactive explainers) -------------------------
 
@@ -302,3 +308,38 @@ export type WalkthroughBuildEvent =
   | { type: 'tokens'; output_tokens: number }
   | { type: 'error'; message: string }
   | { type: 'status'; status: 'queued' | 'running' | 'done' | 'error'; detail?: string };
+
+/**
+ * One card in the walkthrough gallery: a paper's newest usable walkthrough,
+ * with just enough of the outline to draw a cover for it.
+ *
+ * `paperId` is null for a paper that has left the library — a walkthrough
+ * outlives its paper by design, so the gallery is the one place those stay
+ * reachable. `title`/`authors` then come from the ever-saved ledger.
+ */
+export interface WalkthroughGalleryItem {
+  id: number;
+  arxivId: string;
+  status: WalkthroughStatus;
+  fitness: WalkthroughFitness | null;
+  hasBundle: boolean;
+  sourceVersion: string | null;
+  model: string | null;
+  backend: string | null;
+  estimatedCost: number;
+  createdAt: string;
+  updatedAt: string;
+  /** How many rows this paper has; the pane's history menu reaches the rest. */
+  buildCount: number;
+  readyCount: number;
+  thesis: string | null;
+  sceneTitles: string[];
+  visualKinds: WalkthroughVisualKind[];
+  title: string;
+  authors: string[];
+  categories: string[];
+  published: string | null;
+  paperId: number | null;
+  tier: number | null;
+  inLibrary: boolean;
+}

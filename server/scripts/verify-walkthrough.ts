@@ -533,6 +533,7 @@ function makeTar(entries: { name: string; body?: string; type?: string; size?: n
     cache_key: storedByOutlinePass,
     status: 'pending',
     fitness: 'strong',
+    paper_title: 'Attention Is All You Need',
     outline: JSON.stringify(outlineA),
     warnings: null,
     model: 'claude-opus-5',
@@ -549,6 +550,67 @@ function makeTar(entries: { name: string; body?: string; type?: string; size?: n
       walkthroughCacheKey('sha-source', { ...outlineA, thesis: 'edited' }, CONTRACT_VERSION)
     ),
     'an edited outline does not collide with the stored row'
+  );
+
+  // The gallery's join. A walkthrough outlives its paper and can be built for a
+  // paper that was never saved, so neither paper table is a reliable source for
+  // the title — the row carries its own, and the gallery must fall back to it.
+  const galleryBefore = dbMod.getWalkthroughGallery();
+  ok(
+    galleryBefore.length === 1 && galleryBefore[0].arxiv_id === '1706.03762',
+    'the gallery lists a walkthrough whose paper is in neither the library nor the ledger'
+  );
+  ok(
+    galleryBefore[0].resolved_title === 'Attention Is All You Need',
+    'with no paper row and no archive row, the title falls back to the one recorded on the walkthrough'
+  );
+  ok(
+    galleryBefore[0].paper_id === null,
+    'a walkthrough with no live paper reports no paper id, which is what marks it "not in library"'
+  );
+
+  // A live paper wins, because it is the fresher record.
+  // `authors`/`categories` are JSON strings in the papers table, as everywhere.
+  dbMod.savePaper({
+    arxiv_id: '1706.03762',
+    title: 'Attention Is All You Need (v7)',
+    summary: 'abstract',
+    authors: JSON.stringify(['Ashish Vaswani']),
+    published: '2017-06-12T00:00:00Z',
+    updated: '2017-06-12T00:00:00Z',
+    categories: JSON.stringify(['cs.CL']),
+    pdf_url: 'https://arxiv.org/pdf/1706.03762',
+    abs_url: 'https://arxiv.org/abs/1706.03762',
+    doi: null,
+    journal_ref: null,
+  } as any);
+  const galleryAfter = dbMod.getWalkthroughGallery();
+  ok(
+    galleryAfter[0].resolved_title === 'Attention Is All You Need (v7)' &&
+      galleryAfter[0].paper_id !== null,
+    'once the paper is in the library, the gallery takes its title and id from there'
+  );
+
+  // Two rows for one paper are expected (an outline edit forks); the gallery
+  // collapses them so the wall is not a list of near-duplicates.
+  dbMod.createWalkthrough({
+    arxiv_id: '1706.03762',
+    source_version: 'v7',
+    source_sha: 'sha-source',
+    contract_version: CONTRACT_VERSION,
+    cache_key: walkthroughCacheKey('sha-source', { ...outlineA, thesis: 'edited' }, CONTRACT_VERSION),
+    status: 'pending',
+    fitness: 'strong',
+    paper_title: 'Attention Is All You Need',
+    outline: JSON.stringify({ ...outlineA, thesis: 'edited' }),
+    warnings: null,
+    model: 'claude-opus-5',
+    backend: 'cli',
+  });
+  const rowsForPaper = dbMod.getWalkthroughGallery().filter(r => r.arxiv_id === '1706.03762');
+  ok(
+    rowsForPaper.length === 2,
+    'the gallery query returns every row; collapsing to one card per paper is the route\'s job'
   );
 
   // ---------------------------------------------------------------- Phase 6
@@ -740,12 +802,41 @@ function makeTar(entries: { name: string; body?: string; type?: string; size?: n
     /^3\./.test(mathjaxPkg.version),
     `mathjax is pinned to v3 (self-contained SVG fonts); found ${mathjaxPkg.version}. v4 lazy-loads fonts from a CDN and breaks under the bundle CSP.`
   );
-  const mathjaxFile = path.join(nodeModules, 'mathjax', 'es5', 'tex-svg.js');
+  // Read the filename off the route's own map rather than repeating it here.
+  // The literal 'es5/tex-svg.js' used to be typed in both places, so this gate
+  // happily vouched for a file the route had stopped serving — which is the one
+  // thing it exists to prevent.
+  const { ASSETS } = await import('../src/routes/walkthrough');
+  const mathjaxAsset = ASSETS['mathjax-tex-svg.js'];
+  const mathjaxFile = path.join(nodeModules, 'mathjax', mathjaxAsset.file);
   ok(fs.existsSync(mathjaxFile), 'the vendored MathJax build the asset route serves actually exists');
   const mathjaxSource = fs.readFileSync(mathjaxFile, 'utf8');
   ok(
     !/svg\/dynamic/.test(mathjaxSource) && !/dynamic file/.test(mathjaxSource),
     'the vendored MathJax contains no lazy font loader — fonts are compiled in'
+  );
+
+  // The same self-containment property one level down, and the one that
+  // actually bit. Plain `tex-svg.js` pre-loads seven TeX packages and leaves the
+  // rest to `autoload`, which fetches them from `loader.paths.mathjax` at
+  // *typeset* time. The asset route serves two filenames and nothing else, so
+  // the first \boldsymbol in a paper 404s, the loader rejects, `typesetPromise`
+  // rejects with it, and **every equation in that scene** stays raw — measured
+  // on 2606.05878. `preLoad(...)` is MathJax's own record of what is compiled
+  // in, so assert the macros a physics/ML paper actually reaches for are there.
+  const preLoaded = new Set(
+    Array.from(mathjaxSource.matchAll(/preLoad\(((?:"[^"]*"\s*,?\s*)+)\)/g))
+      .flatMap(m => Array.from(m[1].matchAll(/"([^"]+)"/g)).map(x => x[1]))
+  );
+  for (const pkg of ['boldsymbol', 'cancel', 'color', 'braket', 'physics', 'mhchem', 'unicode']) {
+    ok(
+      preLoaded.has(`[tex]/${pkg}`),
+      `the vendored MathJax pre-loads [tex]/${pkg} — autoload must never reach the network, or one macro blanks a whole scene`
+    );
+  }
+  ok(
+    /AllPackages=\["base"/.test(mathjaxSource),
+    'the vendored MathJax is the -full TeX build (every extension compiled in, nothing autoloaded)'
   );
   const threeFile = path.join(nodeModules, 'three', 'build', 'three.module.min.js');
   ok(fs.existsSync(threeFile), 'the vendored three.js build the asset route serves actually exists');
@@ -828,6 +919,39 @@ function makeTar(entries: { name: string; body?: string; type?: string; size?: n
   ok(
     HELPER_JS.indexOf('whenSized()') < HELPER_JS.indexOf('typesetPromise'),
     'the size gate runs before typesetting, not after'
+  );
+
+  // A rejection from `typesetPromise` covers the whole element, so swallowing it
+  // costs an entire scene and says nothing. It must be reported and contained.
+  ok(
+    /typesetPromise\(\[el\]\)\.catch\(function \(err\)/.test(HELPER_JS) &&
+      /WT\.error\('Typesetting failed/.test(HELPER_JS),
+    'a typeset failure is reported to the host, not swallowed'
+  );
+  ok(
+    /function retryPiecewise/.test(HELPER_JS),
+    'a typeset failure is retried block by block, so one bad equation does not blank the scene'
+  );
+
+  // Focus follows a click into the sandboxed frame, and from then on keystrokes
+  // are delivered to *its* document — the app's window listener never sees them,
+  // and the pane-layout keys that exist to leave the walkthrough stop working
+  // exactly while you are in it. The frame has to hand them back explicitly.
+  ok(
+    /post\(\{ type: 'key', key: e\.key \}\)/.test(HELPER_JS),
+    'the helper forwards keystrokes to the host, so app shortcuts survive a click into the frame'
+  );
+  ok(
+    /if \(!e\.isTrusted/.test(HELPER_JS),
+    'only real keystrokes are forwarded — generated code in the bundle cannot synthesize app shortcuts'
+  );
+  ok(
+    /e\.key\.length !== 1/.test(HELPER_JS) && /ctrlKey \|\| e\.metaKey \|\| e\.altKey/.test(HELPER_JS),
+    'forwarding is limited to unmodified single-character keys, the shape the app binds'
+  );
+  ok(
+    /INPUT\|TEXTAREA\|SELECT/.test(HELPER_JS.slice(0, HELPER_JS.indexOf("post({ type: 'key'"))),
+    'a keystroke typed into a field in the bundle is not forwarded as a shortcut'
   );
 
   // Security checklist: no API key or app data reaches the scratch dir. The

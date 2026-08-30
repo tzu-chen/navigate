@@ -13,8 +13,8 @@
   // --- Host protocol -------------------------------------------------------
   // The page runs in an opaque origin (sandbox without allow-same-origin), so
   // it cannot reach the app's DOM, storage or API. These four messages are the
-  // entire vocabulary; the host validates the shape of every one and ignores
-  // anything else.
+  // entire vocabulary — `ready`, `error`, `gotoPage`, `key` — and the host
+  // validates the shape of every one and ignores anything else.
 
   function post(msg) {
     try { global.parent.postMessage(msg, '*'); } catch (e) { /* detached */ }
@@ -27,6 +27,36 @@
     var n = Number(page);
     if (Number.isInteger(n) && n > 0) post({ type: 'gotoPage', page: n });
   };
+
+  /**
+   * Hand keystrokes we do not use back to the app.
+   *
+   * The app binds its shortcuts on its own `window`. A click anywhere in this
+   * frame moves focus into it, and from then on every keystroke is delivered to
+   * *this* document instead — so the pane-layout keys that exist to get you back
+   * out of the walkthrough stopped working precisely once you were using it.
+   * The opaque origin means neither side can read the other's events, so the
+   * only way across is to say so explicitly.
+   *
+   * Three guards, all deliberate:
+   *   - `isTrusted` — true only for a real user keystroke. Generated code in
+   *     this bundle calling `dispatchEvent(new KeyboardEvent(...))` produces a
+   *     synthetic event, which is not forwarded. The frame is sandboxed because
+   *     its contents are written by a model reading third-party text; handing it
+   *     a way to press keys in the host app would give some of that back.
+   *   - single-character keys only, unmodified. That is exactly the shape the
+   *     app's shortcut system accepts, and it leaves Arrow/Tab/Escape to the
+   *     scene stepper and the browser.
+   *   - not from a field, and not already consumed by this page.
+   */
+  document.addEventListener('keydown', function (e) {
+    if (!e.isTrusted || e.defaultPrevented) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (typeof e.key !== 'string' || e.key.length !== 1) return;
+    var t = e.target;
+    if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable)) return;
+    post({ type: 'key', key: e.key });
+  });
 
   // --- Theme ---------------------------------------------------------------
   // CSS custom properties do not cross an iframe boundary, so the host sends
@@ -422,17 +452,54 @@
     });
   }
 
-  /** Typeset any TeX inside `root`. Safe to call on a subtree with no math. */
+  /**
+   * Typeset any TeX inside `root`. Safe to call on a subtree with no math.
+   *
+   * A rejection here used to be swallowed, and that is how a total failure hid
+   * for seven builds: `typesetPromise` rejects for the *whole element* if
+   * anything goes wrong anywhere in it, so one unresolvable macro left an entire
+   * scene as literal TeX on screen with nothing logged. (The cause was MathJax's
+   * `autoload` reaching for an extension the asset route does not serve; the
+   * route now serves the full TeX build so nothing is fetched at typeset time.)
+   *
+   * Two changes make that failure mode survivable rather than silent:
+   *   - it is reported through `WT.error`, which the app surfaces as a
+   *     notification, so the next one is noticed the day it happens; and
+   *   - it is retried element by element, so a single bad equation costs one
+   *     equation rather than every equation beside it.
+   */
   WT.typeset = function (root) {
     var el = root || document.body;
     if (!/[$\\]/.test(el.textContent || '')) return Promise.resolve();
     return whenSized()
       .then(function () { return WT.mathReady(); })
       .then(function (mj) {
-        if (!mj) return;
-        return mj.typesetPromise([el]).catch(function () { /* leave the source visible */ });
+        if (!mj) {
+          WT.error('MathJax did not load; equations are showing as raw TeX.');
+          return;
+        }
+        return mj.typesetPromise([el]).catch(function (err) {
+          WT.error('Typesetting failed: ' + ((err && err.message) || err));
+          return retryPiecewise(mj, el);
+        });
       });
   };
+
+  /**
+   * Second pass after a whole-element rejection: typeset each block on its own
+   * so the failure is contained to whichever one is actually broken. Sequential
+   * rather than parallel — MathJax 3 keeps one typesetting queue, and a burst of
+   * concurrent calls into it after an error is a good way to find a second bug.
+   */
+  function retryPiecewise(mj, el) {
+    var blocks = Array.prototype.slice.call(el.querySelectorAll('.wt-equation-body, p, li, figcaption, .wt-control-label'));
+    return blocks.reduce(function (chain, block) {
+      return chain.then(function () {
+        if (!/[$\\]/.test(block.textContent || '')) return;
+        return mj.typesetPromise([block]).catch(function () { /* this one stays raw */ });
+      });
+    }, Promise.resolve());
+  }
 
   /** A display equation element. `latex` is raw TeX without delimiters. */
   WT.equation = function (latex, label) {

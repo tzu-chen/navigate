@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ArxivPaper, SavedPaper, Tag, FavoriteAuthor, ViewMode } from './types';
+import { ArxivPaper, PaneMode, SavedPaper, Tag, FavoriteAuthor, ViewMode, WalkthroughGalleryItem } from './types';
 import * as api from './services/api';
 import { getSchemeById, applyColorScheme } from './colorSchemes';
 import { useKeyboardShortcut } from './hooks/useKeyboardShortcut';
@@ -10,6 +10,7 @@ import FavoriteAuthors from './components/FavoriteAuthors';
 import ChatHistory from './components/ChatHistory';
 import Comments from './components/Comments';
 import WorldlinePanel from './components/WorldlinePanel';
+import WalkthroughGallery from './components/WalkthroughGallery';
 import SettingsModal from './components/SettingsModal';
 import ArxivRefreshTimer from './components/ArxivRefreshTimer';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -31,6 +32,9 @@ export default function App() {
   const [immersiveMode, setImmersiveMode] = useState(false);
   const [pendingAuthorSearch, setPendingAuthorSearch] = useState<string | null>(null);
   const [initialPaperPage, setInitialPaperPage] = useState<number | undefined>(undefined);
+  // Which viewer pane a paper opens into. Only the walkthrough gallery sets it;
+  // everything else lands on the PDF, which is PaperViewer's own default.
+  const [initialPaneMode, setInitialPaneMode] = useState<PaneMode | undefined>(undefined);
 
   const showNotification = useCallback((msg: string) => {
     setNotification(msg);
@@ -121,6 +125,7 @@ export default function App() {
     setPreviousViewMode(viewMode);
     setSelectedPaper(paper);
     setInitialPaperPage(page);
+    setInitialPaneMode(undefined);
     setBrowsePapers([]);
     setViewMode('viewer');
     api.markPaperViewed(paper.id).then(loadLibrary).catch(() => {});
@@ -128,6 +133,7 @@ export default function App() {
 
   const handleOpenArxivPaper = (paper: ArxivPaper) => {
     setPreviousViewMode(viewMode);
+    setInitialPaneMode(undefined);
     // Only keep browse papers context when opening from Browse view
     if (viewMode !== 'browse') {
       setBrowsePapers([]);
@@ -180,6 +186,57 @@ export default function App() {
     }
   };
 
+  /**
+   * Open a paper straight into its walkthrough.
+   *
+   * A walkthrough has no foreign key to `papers` on purpose, so the gallery can
+   * hold one whose paper has gone to Scribe or been deleted. When that happens
+   * there is no SavedPaper to hand the viewer, so the entry's own identity —
+   * carried from the ever-saved ledger — is enough to open it as a preview: the
+   * walkthrough pane keys off the arXiv id alone, and the PDF comes from the
+   * proxy the same way any unsaved paper's does.
+   */
+  const handleOpenWalkthrough = async (item: WalkthroughGalleryItem) => {
+    setPreviousViewMode('walkthroughs');
+    setBrowsePapers([]);
+    setInitialPaperPage(undefined);
+    setInitialPaneMode('walkthrough');
+
+    const existing = savedPapers.find(p => p.arxiv_id === item.arxivId);
+    if (existing) {
+      setSelectedPaper(existing);
+      setPreviewPaper(null);
+      setViewMode('viewer');
+      api.markPaperViewed(existing.id).then(loadLibrary).catch(() => {});
+      return;
+    }
+
+    // Show the paper immediately from what the gallery already knows, so the
+    // walkthrough opens at once, then fill in the fuller arXiv record if it
+    // answers. Rows outlined before the title was stored on them carry only the
+    // arXiv id, and this is what puts a real title in the viewer's header.
+    const fallback: ArxivPaper = {
+      id: item.arxivId,
+      title: item.title,
+      summary: '',
+      authors: item.authors,
+      published: item.published ?? item.createdAt,
+      updated: item.published ?? item.createdAt,
+      categories: item.categories,
+      pdfUrl: `https://arxiv.org/pdf/${item.arxivId}`,
+      absUrl: `https://arxiv.org/abs/${item.arxivId}`,
+    };
+    setSelectedPaper(null);
+    setPreviewPaper(fallback);
+    setViewMode('viewer');
+    try {
+      const fetched = await api.getArxivPaper(item.arxivId);
+      setPreviewPaper(current => (current?.id === item.arxivId ? fetched : current));
+    } catch {
+      /* offline, or a withdrawn paper — the fallback record is still usable */
+    }
+  };
+
   const viewModeLabels: Record<ViewMode, string> = {
     browse: 'Browse',
     library: 'Library',
@@ -187,6 +244,7 @@ export default function App() {
     worldline: 'Worldlines',
     chatHistory: 'Chat History',
     comments: 'Comments',
+    walkthroughs: 'Walkthroughs',
     viewer: 'Library',
   };
 
@@ -248,6 +306,13 @@ export default function App() {
                   <Icon name="branch" size="18px" />
                 </button>
                 <button
+                  className={`icon-rail-btn ${viewMode === 'walkthroughs' ? 'active' : ''}`}
+                  onClick={() => setViewMode('walkthroughs')}
+                  title="Walkthroughs"
+                >
+                  <Icon name="pane-walkthrough" size="18px" />
+                </button>
+                <button
                   className={`icon-rail-btn ${viewMode === 'chatHistory' ? 'active' : ''}`}
                   onClick={() => setViewMode('chatHistory')}
                   title="Chat History"
@@ -271,6 +336,7 @@ export default function App() {
                 <option value="library">My Library ({savedPapers.length})</option>
                 <option value="authors">Favorite Authors ({favoriteAuthors.length})</option>
                 <option value="worldline">Worldlines</option>
+                <option value="walkthroughs">Walkthroughs</option>
                 <option value="chatHistory">Chat History</option>
                 <option value="comments">Comments</option>
               </select>
@@ -345,6 +411,12 @@ export default function App() {
             onOpenPaper={handleOpenPaper}
           />
         )}
+        {viewMode === 'walkthroughs' && (
+          <WalkthroughGallery
+            onOpen={handleOpenWalkthrough}
+            showNotification={showNotification}
+          />
+        )}
         {viewMode === 'chatHistory' && (
           <ChatHistory
             savedPapers={savedPapers}
@@ -382,6 +454,7 @@ export default function App() {
               onBrowseNavigate={handleBrowseNavigate}
               onImmersiveModeChange={setImmersiveMode}
               initialPage={initialPaperPage}
+              initialPaneMode={initialPaneMode}
             />
           </ErrorBoundary>
         )}

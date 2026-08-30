@@ -15,6 +15,10 @@ import * as api from '../services/api';
  * can be read and *edited* before any money is spent (the main quality lever in
  * the feature), and a finished bundle in a sandboxed iframe.
  *
+ * The outline does not disappear once a bundle exists — it is a toggle over one.
+ * It is the plan the build was made from, and "what was this scene supposed to
+ * show?" is a question you ask *while* looking at the result, not before it.
+ *
  * The bundle runs in an opaque origin — `allow-scripts` without
  * `allow-same-origin` — so it cannot reach this app's DOM, storage or API
  * session. Everything that crosses the boundary goes through the narrow
@@ -74,6 +78,21 @@ export default function WalkthroughPane({ arxivId, paperTitle, onGotoPage, showN
   const [draft, setDraft] = useState<WalkthroughOutline | null>(null);
   const [frameReady, setFrameReady] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  /**
+   * Show the outline over a finished bundle.
+   *
+   * The outline is what the build was made from — the thesis, the scene list,
+   * what each visual is supposed to let you manipulate — and until now it was
+   * simply replaced by the bundle the moment one existed, which is exactly when
+   * "what was this scene meant to show?" starts being worth asking.
+   *
+   * It renders as an overlay rather than swapping the iframe out, deliberately.
+   * A hidden iframe has a zero-size box, and a bundle that typesets in one emits
+   * equations sized off metrics measured as 0 (see the note in PaperViewer). The
+   * frame keeps its box, its scroll position and its scene here; the outline
+   * just sits in front of it.
+   */
+  const [showOutline, setShowOutline] = useState(false);
 
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const abortStream = useRef<(() => void) | null>(null);
@@ -97,6 +116,7 @@ export default function WalkthroughPane({ arxivId, paperTitle, onGotoPage, showN
     setFrameReady(false);
     setProgress([]);
     setEditing(false);
+    setShowOutline(false);
     load();
   }, [load]);
 
@@ -109,7 +129,7 @@ export default function WalkthroughPane({ arxivId, paperTitle, onGotoPage, showN
 
   // --- The postMessage boundary ---------------------------------------------
   //
-  // Only three message types are honoured, and only from this pane's own iframe.
+  // Only four message types are honoured, and only from this pane's own iframe.
   // The frame is in an opaque origin, so its `event.origin` is the string
   // "null" and identity has to be established by comparing the source window —
   // which is the reliable check regardless.
@@ -129,6 +149,25 @@ export default function WalkthroughPane({ arxivId, paperTitle, onGotoPage, showN
         if (Number.isInteger(page) && page > 0) onGotoPage?.(page);
       } else if (message.type === 'error') {
         showNotification(`Walkthrough: ${String(message.message).slice(0, 200)}`);
+      } else if (message.type === 'key') {
+        // A keystroke the reader made while focus was inside the frame.
+        //
+        // The app's shortcuts are bound on its own `window`, and a click
+        // anywhere in the walkthrough moves focus into the iframe — after which
+        // every key goes to *that* document and the app never sees it. So the
+        // pane-layout keys stopped working exactly once you were using the
+        // walkthrough, which is when you most want them.
+        //
+        // Re-dispatching rather than calling the pane handlers directly is what
+        // makes every viewer shortcut work from in here (tier digits, immersive,
+        // panel, save), not just the three this bug was reported for. The frame
+        // only forwards real, unmodified single-character keystrokes; the shape
+        // is re-checked here because the sender is sandboxed content and its
+        // guarantees are its own, not ours.
+        const key = message.key;
+        if (typeof key === 'string' && key.length === 1) {
+          window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+        }
       }
     }
 
@@ -273,6 +312,9 @@ export default function WalkthroughPane({ arxivId, paperTitle, onGotoPage, showN
   }
 
   const outline = editing ? draft : selected?.outline ?? null;
+  // A row with a bundle on disk. The outline is a *toggle* over this one and the
+  // only content of a row without it.
+  const isBuilt = !building && selected?.status === 'ready' && selected.hasBundle;
 
   return (
     <div className="wtp">
@@ -295,6 +337,20 @@ export default function WalkthroughPane({ arxivId, paperTitle, onGotoPage, showN
           </span>
         )}
         <span className="wtp-header-spacer" />
+        {isBuilt && selected?.outline && (
+          <button
+            className={`btn btn-secondary btn-sm ${showOutline ? 'is-active' : ''}`}
+            onClick={() => setShowOutline(v => !v)}
+            aria-pressed={showOutline}
+            title={
+              showOutline
+                ? 'Back to the built walkthrough'
+                : "Show the outline this build was made from — Claude's thesis and scene plan"
+            }
+          >
+            {showOutline ? 'Visualization' : 'Outline'}
+          </button>
+        )}
         {state && state.all.length > 1 && (
           <button className="btn btn-secondary btn-sm" onClick={() => setShowHistory(h => !h)}>
             {state.all.length} builds
@@ -317,7 +373,13 @@ export default function WalkthroughPane({ arxivId, paperTitle, onGotoPage, showN
             <button
               key={row.id}
               className={`wtp-history-row ${selected?.id === row.id ? 'is-active' : ''}`}
-              onClick={() => { setSelected(row); setShowHistory(false); setFrameReady(false); }}
+              onClick={() => {
+                setSelected(row);
+                setShowHistory(false);
+                setFrameReady(false);
+                setShowOutline(false);
+                setEditing(false);
+              }}
             >
               <span className={`wtp-status wtp-status-${row.status}`}>{row.status}</span>
               <span className="wtp-history-when">{new Date(row.createdAt).toLocaleString()}</span>
@@ -344,238 +406,258 @@ export default function WalkthroughPane({ arxivId, paperTitle, onGotoPage, showN
         </ul>
       )}
 
-      {/* No outline yet — offer the cheap pass. */}
-      {!selected && !outlining && (
-        <div className="wtp-empty">
-          <p className="wtp-lede">
-            Build an interactive explainer of this paper from its LaTeX source.
-          </p>
-          <p className="wtp-note">
-            The first step reads the paper and proposes a scene outline — cheap, and it
-            can come back saying the paper has nothing worth animating, which is a
-            correct answer. Nothing is built until you approve the outline.
-          </p>
-          <button className="btn btn-primary" onClick={() => handleOutline(false)}>
-            Read the paper &amp; outline scenes
-          </button>
-        </div>
-      )}
+      {/* The positioned content area. Everything below shares this box, which is
+          what lets the outline sit *over* a live bundle instead of displacing
+          it — see the note on `showOutline`. */}
+      <div className="wtp-body">
 
-      {outlining && (
-        <div className="wtp-empty">
-          <p>Reading the paper's LaTeX source…</p>
-          <p className="wtp-note">Fetching the source package, distilling it, and asking for an outline.</p>
-        </div>
-      )}
-
-      {/* Building — the progress log. */}
-      {building && (
-        <div className="wtp-building">
-          <div className="wtp-building-head">
-            <span className="wtp-spinner" />
-            <span>{activity || 'building…'}</span>
+        {/* No outline yet — offer the cheap pass. */}
+        {!selected && !outlining && (
+          <div className="wtp-empty">
+            <p className="wtp-lede">
+              Build an interactive explainer of this paper from its LaTeX source.
+            </p>
+            <p className="wtp-note">
+              The first step reads the paper and proposes a scene outline — cheap, and it
+              can come back saying the paper has nothing worth animating, which is a
+              correct answer. Nothing is built until you approve the outline.
+            </p>
+            <button className="btn btn-primary" onClick={() => handleOutline(false)}>
+              Read the paper &amp; outline scenes
+            </button>
           </div>
-          <div className="wtp-progress" ref={progressRef}>
-            {progress.map((line, i) => <div key={i} className="wtp-progress-line">{line}</div>)}
+        )}
+
+        {outlining && (
+          <div className="wtp-empty">
+            <p>Reading the paper's LaTeX source…</p>
+            <p className="wtp-note">Fetching the source package, distilling it, and asking for an outline.</p>
           </div>
-          <p className="wtp-note">
-            Capped at {costLabel(state?.budgetUsd ?? 1.5, state?.backend ?? null)} per build.
-            You can leave this pane — the build keeps running.
-          </p>
-        </div>
-      )}
+        )}
 
-      {/* A finished bundle. */}
-      {!building && selected?.status === 'ready' && selected.hasBundle && (
-        <div className="wtp-frame-wrap">
-          {!frameReady && <div className="wtp-frame-loading">Starting the walkthrough…</div>}
-          <iframe
-            key={selected.id}
-            ref={frameRef}
-            className="wtp-frame"
-            title={`Walkthrough of ${paperTitle}`}
-            src={api.getWalkthroughBundleUrl(selected.id)}
-            /* allow-scripts WITHOUT allow-same-origin: the bundle is generated
-               code, and this puts it in an opaque origin with no access to the
-               app's DOM, storage, cookies or API session. */
-            sandbox="allow-scripts"
-            referrerPolicy="no-referrer"
-          />
-        </div>
-      )}
-
-      {/* An outline waiting to be reviewed, edited, and built. */}
-      {!building && selected && selected.status !== 'ready' && outline && (
-        <div className="wtp-outline">
-          <div className="wtp-verdict">
-            <strong>{FITNESS_LABEL[outline.fitness.verdict] ?? outline.fitness.verdict}</strong>
-            <span> — {outline.fitness.reason}</span>
+        {/* Building — the progress log. */}
+        {building && (
+          <div className="wtp-building">
+            <div className="wtp-building-head">
+              <span className="wtp-spinner" />
+              <span>{activity || 'building…'}</span>
+            </div>
+            <div className="wtp-progress" ref={progressRef}>
+              {progress.map((line, i) => <div key={i} className="wtp-progress-line">{line}</div>)}
+            </div>
+            <p className="wtp-note">
+              Capped at {costLabel(state?.budgetUsd ?? 1.5, state?.backend ?? null)} per build.
+              You can leave this pane — the build keeps running.
+            </p>
           </div>
+        )}
 
-          {editing ? (
-            <textarea
-              className="wtp-input wtp-thesis-input"
-              value={outline.thesis}
-              rows={3}
-              onChange={e => setDraft(d => (d ? { ...d, thesis: e.target.value } : d))}
+        {/* A finished bundle. */}
+        {isBuilt && selected && (
+          <div className="wtp-frame-wrap">
+            {!frameReady && !showOutline && (
+              <div className="wtp-frame-loading">Starting the walkthrough…</div>
+            )}
+            <iframe
+              key={selected.id}
+              ref={frameRef}
+              className="wtp-frame"
+              title={`Walkthrough of ${paperTitle}`}
+              src={api.getWalkthroughBundleUrl(selected.id)}
+              /* allow-scripts WITHOUT allow-same-origin: the bundle is generated
+                 code, and this puts it in an opaque origin with no access to the
+                 app's DOM, storage, cookies or API session. */
+              sandbox="allow-scripts"
+              referrerPolicy="no-referrer"
             />
-          ) : (
-            <p className="wtp-thesis">{outline.thesis}</p>
-          )}
+          </div>
+        )}
 
-          <div className="wtp-scenes">
-            {outline.scenes.map((scene, i) => (
-              <div key={i} className="wtp-scene">
-                <div className="wtp-scene-head">
-                  <span className="wtp-scene-num">{i + 1}</span>
-                  {editing ? (
-                    <input
-                      className="wtp-input"
-                      value={scene.title}
-                      onChange={e => updateScene(i, { title: e.target.value })}
-                    />
-                  ) : (
-                    <span className="wtp-scene-title">{scene.title}</span>
-                  )}
-                  <span className={`wtp-kind wtp-kind-${scene.visual.kind}`}>
-                    {scene.visual.kind}
-                  </span>
-                  {editing && (
-                    <button
-                      className="wtp-scene-remove"
-                      title="Remove this scene"
-                      onClick={() =>
-                        setDraft(d => (d ? { ...d, scenes: d.scenes.filter((_, k) => k !== i) } : d))
-                      }
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
+        {/* The outline: the whole content of an un-built row, and an overlay you can
+            call up over a built one. */}
+        {!building && selected && outline && (!isBuilt || showOutline) && (
+          <div className={`wtp-outline ${isBuilt ? 'wtp-outline-overlay' : ''}`}>
+            <div className="wtp-verdict">
+              <strong>{FITNESS_LABEL[outline.fitness.verdict] ?? outline.fitness.verdict}</strong>
+              <span> — {outline.fitness.reason}</span>
+            </div>
 
-                {editing ? (
-                  <>
-                    <textarea
-                      className="wtp-input"
-                      rows={3}
-                      value={scene.narration}
-                      onChange={e => updateScene(i, { narration: e.target.value })}
-                    />
-                    <div className="wtp-scene-visual-edit">
-                      <select
-                        className="wtp-input wtp-select"
-                        value={scene.visual.kind}
-                        onChange={e =>
-                          updateScene(i, {
-                            visual: { ...scene.visual, kind: e.target.value as WalkthroughScene['visual']['kind'] },
-                          })
+            {editing ? (
+              <textarea
+                className="wtp-input wtp-thesis-input"
+                value={outline.thesis}
+                rows={3}
+                onChange={e => setDraft(d => (d ? { ...d, thesis: e.target.value } : d))}
+              />
+            ) : (
+              <p className="wtp-thesis">{outline.thesis}</p>
+            )}
+
+            <div className="wtp-scenes">
+              {outline.scenes.map((scene, i) => (
+                <div key={i} className="wtp-scene">
+                  <div className="wtp-scene-head">
+                    <span className="wtp-scene-num">{i + 1}</span>
+                    {editing ? (
+                      <input
+                        className="wtp-input"
+                        value={scene.title}
+                        onChange={e => updateScene(i, { title: e.target.value })}
+                      />
+                    ) : (
+                      <span className="wtp-scene-title">{scene.title}</span>
+                    )}
+                    <span className={`wtp-kind wtp-kind-${scene.visual.kind}`}>
+                      {scene.visual.kind}
+                    </span>
+                    {editing && (
+                      <button
+                        className="wtp-scene-remove"
+                        title="Remove this scene"
+                        onClick={() =>
+                          setDraft(d => (d ? { ...d, scenes: d.scenes.filter((_, k) => k !== i) } : d))
                         }
                       >
-                        {['none', 'plot2d', 'field', 'graph', 'geometry', 'process', 'custom'].map(k => (
-                          <option key={k} value={k}>{k}</option>
-                        ))}
-                      </select>
+                        ✕
+                      </button>
+                    )}
+                  </div>
+
+                  {editing ? (
+                    <>
                       <textarea
                         className="wtp-input"
-                        rows={2}
-                        placeholder="What the reader manipulates, and what they learn by manipulating it"
-                        value={scene.visual.spec}
-                        onChange={e =>
-                          updateScene(i, { visual: { ...scene.visual, spec: e.target.value } })
-                        }
+                        rows={3}
+                        value={scene.narration}
+                        onChange={e => updateScene(i, { narration: e.target.value })}
                       />
+                      <div className="wtp-scene-visual-edit">
+                        <select
+                          className="wtp-input wtp-select"
+                          value={scene.visual.kind}
+                          onChange={e =>
+                            updateScene(i, {
+                              visual: { ...scene.visual, kind: e.target.value as WalkthroughScene['visual']['kind'] },
+                            })
+                          }
+                        >
+                          {['none', 'plot2d', 'field', 'graph', 'geometry', 'process', 'custom'].map(k => (
+                            <option key={k} value={k}>{k}</option>
+                          ))}
+                        </select>
+                        <textarea
+                          className="wtp-input"
+                          rows={2}
+                          placeholder="What the reader manipulates, and what they learn by manipulating it"
+                          value={scene.visual.spec}
+                          onChange={e =>
+                            updateScene(i, { visual: { ...scene.visual, spec: e.target.value } })
+                          }
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="wtp-scene-narration">{scene.narration}</p>
+                      {scene.visual.kind !== 'none' && (
+                        <p className="wtp-scene-spec">{scene.visual.spec}</p>
+                      )}
+                    </>
+                  )}
+
+                  {(scene.equations.length > 0 || scene.sourceRefs.length > 0) && !editing && (
+                    <div className="wtp-scene-refs">
+                      {scene.equations.map(eq => (
+                        <span key={eq} className="wtp-ref-chip">{eq}</span>
+                      ))}
+                      {scene.sourceRefs.map((ref, k) => (
+                        <span
+                          key={k}
+                          className={`wtp-ref-chip ${ref.page ? 'is-clickable' : ''}`}
+                          onClick={() => ref.page && onGotoPage?.(ref.page)}
+                          title={ref.page ? `Jump to page ${ref.page}` : undefined}
+                        >
+                          §{ref.section}
+                        </span>
+                      ))}
                     </div>
-                  </>
-                ) : (
-                  <>
-                    <p className="wtp-scene-narration">{scene.narration}</p>
-                    {scene.visual.kind !== 'none' && (
-                      <p className="wtp-scene-spec">{scene.visual.spec}</p>
-                    )}
-                  </>
-                )}
+                  )}
+                </div>
+              ))}
+            </div>
 
-                {(scene.equations.length > 0 || scene.sourceRefs.length > 0) && !editing && (
-                  <div className="wtp-scene-refs">
-                    {scene.equations.map(eq => (
-                      <span key={eq} className="wtp-ref-chip">{eq}</span>
-                    ))}
-                    {scene.sourceRefs.map((ref, k) => (
-                      <span
-                        key={k}
-                        className={`wtp-ref-chip ${ref.page ? 'is-clickable' : ''}`}
-                        onClick={() => ref.page && onGotoPage?.(ref.page)}
-                        title={ref.page ? `Jump to page ${ref.page}` : undefined}
-                      >
-                        §{ref.section}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+            <div className="wtp-actions">
+              {editing ? (
+                <>
+                  <button className="btn btn-primary btn-sm" onClick={handleSaveOutline}>
+                    Save outline
+                  </button>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => { setEditing(false); setDraft(null); }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  {/* Not offered on a built row: its Rebuild button lives in the
+                      header, and a second "Build" beside a finished walkthrough
+                      reads like it would produce something new when it would in
+                      fact hit the cache and return this same bundle. */}
+                  {!isBuilt && (
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleBuild(selected)}
+                      disabled={outline.scenes.length === 0}
+                      title={`Runs an agentic build, capped at ${costLabel(state?.budgetUsd ?? 1.5, state?.backend ?? null)}`}
+                    >
+                      Build walkthrough · up to {costLabel(state?.budgetUsd ?? 1.5, state?.backend ?? null)}
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => { setDraft(structuredClone(outline)); setEditing(true); }}
+                    title={
+                      isBuilt
+                        ? 'Editing a built walkthrough forks a new row — this build is kept'
+                        : 'Edit the outline before paying for a build'
+                    }
+                  >
+                    Edit outline
+                  </button>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => handleOutline(true)}
+                    title="Re-read the paper and propose a fresh outline"
+                  >
+                    Re-outline
+                  </button>
+                </>
+              )}
+            </div>
 
-          <div className="wtp-actions">
-            {editing ? (
-              <>
-                <button className="btn btn-primary btn-sm" onClick={handleSaveOutline}>
-                  Save outline
-                </button>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => { setEditing(false); setDraft(null); }}
-                >
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={() => handleBuild(selected)}
-                  disabled={outline.scenes.length === 0}
-                  title={`Runs an agentic build, capped at ${costLabel(state?.budgetUsd ?? 1.5, state?.backend ?? null)}`}
-                >
-                  Build walkthrough · up to {costLabel(state?.budgetUsd ?? 1.5, state?.backend ?? null)}
-                </button>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => { setDraft(structuredClone(outline)); setEditing(true); }}
-                >
-                  Edit outline
-                </button>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => handleOutline(true)}
-                  title="Re-read the paper and propose a fresh outline"
-                >
-                  Re-outline
-                </button>
-              </>
+            {outline.fitness.verdict === 'none' && !isBuilt && (
+              <p className="wtp-note">
+                Building is still offered: it produces a prose-and-equations walkthrough with
+                static figures, at a fraction of the cost of an animated one.
+              </p>
             )}
           </div>
+        )}
 
-          {outline.fitness.verdict === 'none' && (
+        {!building && selected?.status === 'failed' && (
+          <div className="wtp-empty">
+            <p className="wtp-error">{selected.error}</p>
             <p className="wtp-note">
-              Building is still offered: it produces a prose-and-equations walkthrough with
-              static figures, at a fraction of the cost of an animated one.
+              The outline survived, so a retry costs only the build.
             </p>
-          )}
-        </div>
-      )}
-
-      {!building && selected?.status === 'failed' && (
-        <div className="wtp-empty">
-          <p className="wtp-error">{selected.error}</p>
-          <p className="wtp-note">
-            The outline survived, so a retry costs only the build.
-          </p>
-          <button className="btn btn-primary btn-sm" onClick={() => handleBuild(selected, true)}>
-            Retry build
-          </button>
-        </div>
-      )}
+            <button className="btn btn-primary btn-sm" onClick={() => handleBuild(selected, true)}>
+              Retry build
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

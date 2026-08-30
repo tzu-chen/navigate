@@ -56,7 +56,7 @@ function param(req: Request, name: string): string {
  * offline-correct, version-pinned by package.json, and the bundle's CSP forbids
  * the alternative anyway.
  */
-const ASSETS: Record<string, { module: string; file: string; type: string }> = {
+export const ASSETS: Record<string, { module: string; file: string; type: string }> = {
   'three.module.js': {
     module: 'three',
     file: 'build/three.module.min.js',
@@ -69,8 +69,29 @@ const ASSETS: Record<string, { module: string; file: string; type: string }> = {
     // load` and abandons typesetting entirely, leaving raw \(…\) on screen.
     // v3 compiles the whole font into this one file, so SVG output really does
     // need no network. Do not upgrade without re-checking that.
+    //
+    // **And it must be the `-full` build, for the same reason one level down.**
+    // Plain `tex-svg.js` pre-loads only seven TeX packages (base, ams,
+    // newcommand, noundefined, require, autoload, configmacros) and leaves the
+    // rest to `autoload`, which fetches them at *typeset* time. So the first
+    // \boldsymbol in a paper — and ML papers are full of them — sent MathJax to
+    // `<paths.mathjax>/input/tex/extensions/boldsymbol.js`, which this route has
+    // never served. The request 404s, the loader promise rejects,
+    // `typesetPromise` rejects with it, and **every equation in that scene stays
+    // raw** — not just the one that used the macro. Measured on 2606.05878
+    // (TS-ICL): the whole opening scene rendered as literal TeX.
+    //
+    // `tex-svg-full.js` pre-loads every extension (`\boldsymbol`, `\cancel`,
+    // `\color`, `\bra`/`\ket`, mhchem, physics, …), so autoload resolves from
+    // the in-memory registry and never touches the network. It costs 166 KB
+    // more (2.28 MB vs 2.11 MB) — nothing against being unable to fail.
+    //
+    // The *served name* deliberately does not change: it is unversioned and
+    // sent `no-cache`, so swapping the file behind it repairs every walkthrough
+    // already built, with no bundle migration. That is the whole reason this
+    // route must never send `immutable`.
     module: 'mathjax',
-    file: 'es5/tex-svg.js',
+    file: 'es5/tex-svg-full.js',
     type: 'text/javascript; charset=utf-8',
   },
 };
@@ -295,6 +316,18 @@ function parseOutline(row: db.WalkthroughRow): WalkthroughOutline | null {
   }
 }
 
+/** `authors`/`categories` are JSON strings in both `papers` and `paper_archive`,
+ *  and null when neither table still knows the paper. */
+function safeJsonArray(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
 function rowToResponse(row: db.WalkthroughRow) {
   return {
     id: row.id,
@@ -422,6 +455,10 @@ router.post('/outline/:arxivId(*)', async (req: Request, res: Response) => {
       // offered (prose and equations), it just should not be sold as animated.
       status: result.outline.fitness.verdict === 'none' ? 'unfit' : 'pending',
       fitness: result.outline.fitness.verdict,
+      // Recorded on the row because the gallery cannot rely on either paper
+      // table knowing it: a walkthrough outlives its paper, and can be outlined
+      // straight from a browse listing for a paper that was never saved.
+      paper_title: context.paper.title,
       outline: JSON.stringify(result.outline),
       warnings: JSON.stringify([
         ...context.warnings,
@@ -493,6 +530,7 @@ router.put('/row/:id/outline', (req: Request, res: Response) => {
         cache_key: cacheKey,
         status: 'pending',
         fitness: outline.fitness.verdict,
+        paper_title: row.paper_title,
         outline: JSON.stringify(outline),
         warnings: row.warnings,
         model: row.model,
@@ -777,6 +815,73 @@ router.get('/indicators', (_req: Request, res: Response) => {
   } catch (error) {
     console.error('Walkthrough indicators error:', error);
     res.status(500).json({ error: 'Failed to load walkthrough indicators' });
+  }
+});
+
+/**
+ * GET /api/walkthrough/gallery — one card's worth of data per paper that has a
+ * walkthrough.
+ *
+ * Collapsed to **one entry per paper**, not per row: multiple rows per paper are
+ * expected (an outline edit forks a new row and the previous build survives it),
+ * and a gallery that showed each of them would be a list of near-duplicates. The
+ * entry is the newest `ready` row, falling back to the newest row of any status
+ * so a paper mid-outline is still visible; `buildCount` says how many rows sit
+ * behind it, reachable from the pane's own history menu.
+ *
+ * The outline travels in a reduced form — scene titles and visual kinds, not the
+ * narration — because that is exactly what the card's generated cover graphic is
+ * drawn from, and shipping every narration for every paper would dwarf the rest
+ * of the payload.
+ */
+router.get('/gallery', (_req: Request, res: Response) => {
+  try {
+    const byPaper = new Map<string, db.WalkthroughGalleryRow[]>();
+    for (const row of db.getWalkthroughGallery()) {
+      const bucket = byPaper.get(row.arxiv_id);
+      if (bucket) bucket.push(row);
+      else byPaper.set(row.arxiv_id, [row]);
+    }
+
+    const items = Array.from(byPaper.values()).map(rows => {
+      // Rows arrive newest-first, so the first `ready` one is the newest ready one.
+      const row = rows.find(r => r.status === 'ready' && r.bundle_path) ?? rows[0];
+      const outline = parseOutline(row);
+      return {
+        id: row.id,
+        arxivId: row.arxiv_id,
+        status: row.status,
+        fitness: row.fitness,
+        hasBundle: !!row.bundle_path,
+        sourceVersion: row.source_version,
+        model: row.model,
+        backend: row.backend,
+        estimatedCost: row.estimated_cost ?? 0,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        buildCount: rows.length,
+        readyCount: rows.filter(r => r.status === 'ready' && r.bundle_path).length,
+        thesis: outline?.thesis ?? null,
+        sceneTitles: (outline?.scenes ?? []).map(s => s.title),
+        visualKinds: (outline?.scenes ?? []).map(s => s.visual.kind),
+        // Identity. `paperId` null simply means the paper has left the library —
+        // the walkthrough outlives it on purpose.
+        title: row.resolved_title ?? row.arxiv_id,
+        authors: safeJsonArray(row.resolved_authors),
+        categories: safeJsonArray(row.resolved_categories),
+        published: row.resolved_published,
+        paperId: row.paper_id,
+        tier: row.paper_tier,
+        inLibrary: row.paper_id !== null,
+      };
+    });
+
+    // Newest walkthrough first — the gallery is a record of what you have built.
+    items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    res.json({ items, contractVersion: CONTRACT_VERSION, model: WALKTHROUGH_MODEL });
+  } catch (error) {
+    console.error('Walkthrough gallery error:', error);
+    res.status(500).json({ error: 'Failed to load the walkthrough gallery' });
   }
 });
 

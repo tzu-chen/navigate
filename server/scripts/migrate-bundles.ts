@@ -31,6 +31,40 @@ function replaceOnce(html: string, from: string, to: string): string | null {
   return html.includes(from) ? html.replace(from, to) : null;
 }
 
+/**
+ * The same edit against several source shapes, first match wins.
+ *
+ * Bundles on disk are not all byte-identical even where they are semantically
+ * current: an earlier migration rewrote `WT.typeset` into a differently
+ * indented, differently chained form than a fresh build emits, so a later
+ * migration of the same function meets two shapes. Listing them beats a loose
+ * regex — an exact string that fails is *reported* as a miss, which is how the
+ * second shape was noticed at all.
+ */
+function replaceFirstOf(html: string, variants: { from: string; to: string }[]): string | null {
+  for (const variant of variants) {
+    if (html.includes(variant.from)) return html.replace(variant.from, variant.to);
+  }
+  return null;
+}
+
+/**
+ * The containment half of `typeset-failure-is-loud-and-contained`, shared by
+ * both source shapes that migration has to match. Kept byte-identical to the
+ * copy in `server/assets/walkthrough/wt.js`, so a migrated bundle and a freshly
+ * built one behave the same.
+ */
+const RETRY_PIECEWISE = `
+  function retryPiecewise(mj, el) {
+    var blocks = Array.prototype.slice.call(el.querySelectorAll('.wt-equation-body, p, li, figcaption, .wt-control-label'));
+    return blocks.reduce(function (chain, block) {
+      return chain.then(function () {
+        if (!/[$\\\\]/.test(block.textContent || '')) return;
+        return mj.typesetPromise([block]).catch(function () { /* this one stays raw */ });
+      });
+    }, Promise.resolve());
+  }`;
+
 const MIGRATIONS: Migration[] = [
   {
     // The tag was absolutely positioned at the right edge. Display maths is
@@ -128,6 +162,96 @@ const MIGRATIONS: Migration[] = [
     var el = root || document.body;
     if (!/[$\\\\]/.test(el.textContent || '')) return Promise.resolve();
     return whenSized().then(function () { return WT.mathReady(); }).then(function (mj) {`
+      ),
+  },
+  {
+    // `typesetPromise` rejects for the **whole element** if anything in it goes
+    // wrong, and the rejection was swallowed — so one unresolvable macro left an
+    // entire scene as literal TeX with nothing logged anywhere. That is how a
+    // total failure hid across seven builds: MathJax's `autoload` reached for a
+    // TeX extension (\boldsymbol, and ML papers are full of them) that the asset
+    // route did not serve, the fetch 404'd, and every equation in the scene
+    // stayed raw.
+    //
+    // The route now serves the full TeX build, so nothing is fetched at typeset
+    // time and the cause is gone. This carries the two guards that would have
+    // caught it into the bundles already on disk: report the rejection through
+    // `WT.error` (which the app shows as a notification), then retry block by
+    // block so a single bad equation costs one equation instead of the page.
+    name: 'typeset-failure-is-loud-and-contained',
+    applies: html => html.includes('WT.typeset = function') && !html.includes('retryPiecewise'),
+    // Two shapes are in the wild: what a fresh build emits, and what the
+    // `typeset-waits-for-layout` migration above rewrote older bundles into
+    // (one-line chain, two spaces less indentation). Both are listed rather
+    // than matched loosely — an exact string that misses gets *reported*, which
+    // is how the second shape was noticed instead of silently skipped.
+    run: html =>
+      replaceFirstOf(html, [
+        {
+          from: `        if (!mj) return;
+        return mj.typesetPromise([el]).catch(function () { /* leave the source visible */ });
+      });
+  };`,
+          to: `        if (!mj) {
+          WT.error('MathJax did not load; equations are showing as raw TeX.');
+          return;
+        }
+        return mj.typesetPromise([el]).catch(function (err) {
+          WT.error('Typesetting failed: ' + ((err && err.message) || err));
+          return retryPiecewise(mj, el);
+        });
+      });
+  };
+${RETRY_PIECEWISE}`,
+        },
+        {
+          from: `      if (!mj) return;
+      return mj.typesetPromise([el]).catch(function () { /* leave the source visible */ });
+    });
+  };`,
+          to: `      if (!mj) {
+        WT.error('MathJax did not load; equations are showing as raw TeX.');
+        return;
+      }
+      return mj.typesetPromise([el]).catch(function (err) {
+        WT.error('Typesetting failed: ' + ((err && err.message) || err));
+        return retryPiecewise(mj, el);
+      });
+    });
+  };
+${RETRY_PIECEWISE}`,
+        },
+      ]),
+  },
+  {
+    // The app binds its shortcuts on its own `window`. Clicking anywhere in the
+    // bundle moves focus into the iframe, and from then on every keystroke goes
+    // to the frame's document instead — so the pane-layout keys that exist to
+    // get you back *out* of the walkthrough stopped working precisely once you
+    // were using it. The opaque origin means the host cannot listen for them, so
+    // the frame has to hand them over explicitly.
+    name: 'forward-keystrokes-to-host',
+    applies: html => html.includes('WT.gotoPage = function') && !html.includes("type: 'key'"),
+    run: html =>
+      replaceOnce(
+        html,
+        `  WT.gotoPage = function (page) {
+    var n = Number(page);
+    if (Number.isInteger(n) && n > 0) post({ type: 'gotoPage', page: n });
+  };`,
+        `  WT.gotoPage = function (page) {
+    var n = Number(page);
+    if (Number.isInteger(n) && n > 0) post({ type: 'gotoPage', page: n });
+  };
+
+  document.addEventListener('keydown', function (e) {
+    if (!e.isTrusted || e.defaultPrevented) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (typeof e.key !== 'string' || e.key.length !== 1) return;
+    var t = e.target;
+    if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable)) return;
+    post({ type: 'key', key: e.key });
+  });`
       ),
   },
 ];

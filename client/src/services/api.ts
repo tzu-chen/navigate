@@ -1,4 +1,4 @@
-import { ArxivPaper, SavedPaper, Comment, CommentWithPaper, Tag, CategoryGroup, FavoriteAuthor, ChatBackend, ChatBackendStatus, ChatMessage, ChatSession, ChatTurnMeta, ChatTurnResult, WorldlineChatSession, Worldline, PaperSimilarityResult, ScoutScanResult, TrimMode, Walkthrough, WalkthroughBuildEvent, WalkthroughOutline, WalkthroughPaperState } from '../types';
+import { ArxivPaper, SavedPaper, Comment, CommentWithPaper, Tag, CategoryGroup, FavoriteAuthor, ChatBackend, ChatBackendStatus, ChatMessage, ChatSession, ChatTurnMeta, ChatTurnResult, WorldlineChatSession, Worldline, PaperSimilarityResult, ScoutScanResult, TrimMode, Walkthrough, WalkthroughBuildEvent, WalkthroughGalleryItem, WalkthroughOutline, WalkthroughPaperState } from '../types';
 import {
   coerceSchemeId,
   DEFAULT_SCHEME_ID,
@@ -955,6 +955,15 @@ export async function deleteWalkthrough(id: number): Promise<void> {
 
 export function getWalkthroughBundleUrl(id: number): string {
   return `${BASE}/walkthrough/row/${id}/bundle`;
+}
+
+/** Every paper that has a walkthrough, one entry each, for the gallery tab. */
+export async function getWalkthroughGallery(): Promise<{
+  items: WalkthroughGalleryItem[];
+  contractVersion: string;
+  model: string;
+}> {
+  return request('/walkthrough/gallery');
 }
 
 /** Which papers have a walkthrough, for the Library indicator. */
