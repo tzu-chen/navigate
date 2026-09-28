@@ -375,8 +375,12 @@ export async function removeFavoriteAuthor(id: number): Promise<void> {
   await request(`/authors/favorites/${id}`, { method: 'DELETE' });
 }
 
-export async function getFavoriteAuthorPublications(): Promise<{ papers: (ArxivPaper & { matchedAuthor: string })[] }> {
-  return request('/authors/favorites/publications');
+export async function getFavoriteAuthorPublications(signal?: AbortSignal): Promise<{
+  papers: (ArxivPaper & { matchedAuthor: string })[];
+  failedAuthors: string[];
+  rateLimited: boolean;
+}> {
+  return request('/authors/favorites/publications', { signal });
 }
 
 // --- Chat --------------------------------------------------------------------

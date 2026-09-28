@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { ArxivPaper, FavoriteAuthor } from '../types';
 import * as api from '../services/api';
 import LaTeX from './LaTeX';
@@ -23,29 +23,48 @@ export default function FavoriteAuthors({
   const [searchQuery, setSearchQuery] = useState('');
   const [publications, setPublications] = useState<(ArxivPaper & { matchedAuthor: string })[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [failedAuthors, setFailedAuthors] = useState<string[]>([]);
+  const [rateLimited, setRateLimited] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
   const [savingIds, setSavingIds] = useState<Set<string>>(new Set());
   const [expandedAbstracts, setExpandedAbstracts] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
 
-  const loadPublications = useCallback(async () => {
+  // Include identities, since replacing one author with another can leave the
+  // count unchanged. Ignore an older response after the list changes.
+  const authorsKey = favoriteAuthors.map(author => `${author.id}:${author.name}`).join('|');
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
     if (favoriteAuthors.length === 0) {
       setPublications([]);
+      setFailedAuthors([]);
+      setLoadError('');
+      setRateLimited(false);
+      setLoading(false);
       return;
     }
     setLoading(true);
-    try {
-      const result = await api.getFavoriteAuthorPublications();
-      setPublications(result.papers);
-    } catch (err) {
-      console.error('Failed to load publications:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [favoriteAuthors.length]);
-
-  useEffect(() => {
-    loadPublications();
-  }, [loadPublications]);
+    setPublications([]);
+    setFailedAuthors([]);
+    setLoadError('');
+    setRateLimited(false);
+    api.getFavoriteAuthorPublications(controller.signal)
+      .then(result => {
+        if (!active) return;
+        setPublications(result.papers);
+        setFailedAuthors(result.failedAuthors || []);
+        setRateLimited(result.rateLimited || false);
+      })
+      .catch(err => {
+        if (!active) return;
+        console.error('Failed to load publications:', err);
+        setLoadError(err instanceof Error ? err.message : 'Failed to load publications');
+      })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; controller.abort(); };
+  }, [authorsKey, reloadToken]);
 
   async function handleAddAuthor() {
     const name = searchQuery.trim();
@@ -148,7 +167,20 @@ export default function FavoriteAuthors({
         <div className="loading">Loading publications from favorite authors...</div>
       )}
 
-      {favoriteAuthors.length > 0 && !loading && publications.length === 0 && (
+      {favoriteAuthors.length > 0 && !loading && (loadError || failedAuthors.length > 0) && (
+        <div className="empty-state" role="alert">
+          {loadError || (rateLimited
+            ? `ArXiv is rate limiting author searches. ${failedAuthors.length} author listings could not be loaded; try again later.`
+            : `${failedAuthors.length} author listings could not be loaded.`)}
+          {!rateLimited && (
+            <button className="btn btn-secondary btn-sm" onClick={() => setReloadToken(n => n + 1)}>
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+
+      {favoriteAuthors.length > 0 && !loading && !loadError && failedAuthors.length === 0 && publications.length === 0 && (
         <div className="empty-state">No recent publications found from your favorite authors.</div>
       )}
 

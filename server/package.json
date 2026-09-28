@@ -13,6 +13,7 @@
     "verify:autotrim": "tsx scripts/verify-autotrim.ts",
     "diagnose": "tsx scripts/diagnose-worldlines.ts",
     "verify:walkthrough": "tsx scripts/verify-walkthrough.ts",
+    "verify:authors": "tsx scripts/verify-authors.ts",
     "migrate:bundles": "tsx scripts/migrate-bundles.ts"
   },
   "dependencies": {

@@ -86,7 +86,7 @@ paperpile-navigate/
   + `papers.ts` — Full CRUD for saved papers + bulk operations (download-pdfs, delete-pdfs, delete, tier, add-tag, remove-tag) + sub-routes for comments and tags
   + `tags.ts` — Tag CRUD (name is UNIQUE)
   + `chat.ts` — Paper and worldline chat as SSE streams: session priming/resume, persistence, and `GET /backend-status`. Also API key verification. See Chat below.
-  + `authors.ts` — Favorite authors + batch-fetches recent publications (concurrency limit: 3)
+  + `authors.ts` — Favorite authors + sequentially fetches recent publications; author searches share in-flight requests, persist a six-hour cache, and pause after arXiv rate limits
   + `export.ts` — BibTeX and Paperpile JSON generation. Citation key format: `{LastName}{Year}{ArxivId}`. Embeds tags as keywords and comments as notes. Also streams a ZIP archive of selected local PDFs (`GET /api/export/pdfs?ids=`).
   + `worldlines.ts` — Worldline CRUD, paper assignment with position ordering, embedding similarity scoring + flag log/dismiss/stats (see Similarity System below), batch import from ArXiv
   + `settings.ts` — Key-value settings CRUD (API key, similarity threshold, etc.)

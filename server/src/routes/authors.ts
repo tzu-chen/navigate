@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import * as db from '../services/database';
-import { searchByAuthor } from '../services/arxiv';
+import { ArxivAuthorRateLimitError, searchByAuthor } from '../services/arxiv';
 import { ArxivPaper } from '../types';
 
 const router = Router();
@@ -52,45 +52,42 @@ router.delete('/favorites/:id', (req: Request, res: Response) => {
 
 // GET /api/authors/favorites/publications - Get recent publications from all favorite authors
 router.get('/favorites/publications', async (_req: Request, res: Response) => {
+  let disconnected = false;
+  res.on('close', () => { if (!res.writableEnded) disconnected = true; });
   try {
     const authors = db.getFavoriteAuthors() as Array<{ id: number; name: string; added_at: string }>;
     if (authors.length === 0) {
-      return res.json({ papers: [] });
+      return res.json({ papers: [], failedAuthors: [], rateLimited: false });
     }
 
     const allPapers: (ArxivPaper & { matchedAuthor: string })[] = [];
     const seenIds = new Set<string>();
+    const failedAuthors: string[] = [];
+    let rateLimited = false;
 
-    // Fetch papers for each author (limited concurrency with Promise.all in batches)
-    const batchSize = 3;
-    for (let i = 0; i < authors.length; i += batchSize) {
-      const batch = authors.slice(i, i + batchSize);
-      const results = await Promise.all(
-        batch.map(async (author) => {
-          try {
-            const result = await searchByAuthor(author.name, 10);
-            return result.papers.map(p => ({ ...p, matchedAuthor: author.name }));
-          } catch (err) {
-            console.error(`Failed to search papers for ${author.name}:`, err);
-            return [];
-          }
-        })
-      );
-
-      for (const papers of results) {
-        for (const paper of papers) {
+    // The API gate spaces requests; run searches sequentially so a 429 stops
+    // further uncached searches via searchByAuthor's shared cooldown.
+    for (const author of authors) {
+      if (disconnected) return;
+      try {
+        const result = await searchByAuthor(author.name, 10);
+        for (const paper of result.papers) {
           if (!seenIds.has(paper.id)) {
             seenIds.add(paper.id);
-            allPapers.push(paper);
+            allPapers.push({ ...paper, matchedAuthor: author.name });
           }
         }
+      } catch (err) {
+        failedAuthors.push(author.name);
+        if (err instanceof ArxivAuthorRateLimitError) rateLimited = true;
+        else console.error(`Failed to search papers for ${author.name}:`, err);
       }
     }
 
     // Sort by published date descending
     allPapers.sort((a, b) => new Date(b.published).getTime() - new Date(a.published).getTime());
 
-    res.json({ papers: allPapers });
+    if (!disconnected) res.json({ papers: allPapers, failedAuthors, rateLimited });
   } catch (error) {
     console.error('Failed to get favorite author publications:', error);
     res.status(500).json({ error: 'Failed to get publications' });

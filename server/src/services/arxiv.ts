@@ -1,5 +1,8 @@
 import { parseStringPromise } from 'xml2js';
 import { ArxivPaper } from '../types';
+import fs from 'fs';
+import path from 'path';
+import { DATA_DIR } from './paths';
 
 const ARXIV_API_BASE = 'http://export.arxiv.org/api/query';
 
@@ -166,39 +169,106 @@ export async function searchArxiv(params: {
 }
 
 const AUTHOR_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
-const authorCache = new Map<string, { papers: ArxivPaper[]; totalResults: number; fetchedAt: number }>();
+const AUTHOR_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
+const AUTHOR_CACHE_FILE = path.join(DATA_DIR, 'author-search-cache.json');
+type AuthorSearchResult = { papers: ArxivPaper[]; totalResults: number };
+const authorCache = new Map<string, AuthorSearchResult & { fetchedAt: number }>();
+const authorSearchesInFlight = new Map<string, Promise<AuthorSearchResult>>();
+let authorRateLimitUntil = 0;
 
-export async function searchByAuthor(authorName: string, maxResults: number = 20): Promise<{ papers: ArxivPaper[]; totalResults: number }> {
+function loadAuthorCache(): void {
+  try {
+    const stored = JSON.parse(fs.readFileSync(AUTHOR_CACHE_FILE, 'utf8')) as {
+      entries?: Record<string, AuthorSearchResult & { fetchedAt: number }>;
+      rateLimitUntil?: number;
+    };
+    for (const [key, entry] of Object.entries(stored.entries || {})) {
+      if (Array.isArray(entry.papers) && Number.isFinite(entry.fetchedAt) &&
+          Date.now() - entry.fetchedAt < AUTHOR_CACHE_TTL_MS) {
+        authorCache.set(key, entry);
+      }
+    }
+    if (Number.isFinite(stored.rateLimitUntil)) authorRateLimitUntil = stored.rateLimitUntil!;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn('Could not load author search cache:', error);
+    }
+  }
+}
+
+function saveAuthorCache(): void {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tempFile = `${AUTHOR_CACHE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify({
+      entries: Object.fromEntries(authorCache),
+      rateLimitUntil: authorRateLimitUntil,
+    }));
+    fs.renameSync(tempFile, AUTHOR_CACHE_FILE);
+  } catch (error) {
+    console.warn('Could not save author search cache:', error);
+  }
+}
+
+loadAuthorCache();
+
+export class ArxivAuthorRateLimitError extends Error {
+  constructor() {
+    super('ArXiv is rate limiting author searches. Try again later.');
+    this.name = 'ArxivAuthorRateLimitError';
+  }
+}
+
+export async function searchByAuthor(authorName: string, maxResults: number = 20): Promise<AuthorSearchResult> {
   const cacheKey = `${authorName}::${maxResults}`;
   const hit = authorCache.get(cacheKey);
-  if (hit && Date.now() - hit.fetchedAt < AUTHOR_CACHE_TTL_MS) {
+  if (hit && (Date.now() - hit.fetchedAt < AUTHOR_CACHE_TTL_MS || Date.now() < authorRateLimitUntil)) {
     return { papers: hit.papers, totalResults: hit.totalResults };
   }
 
-  const quoted = `"${authorName}"`;
-  const encoded = encodeURIComponent(quoted);
-  const url = `${ARXIV_API_BASE}?search_query=au:${encoded}&start=0&max_results=${maxResults}&sortBy=submittedDate&sortOrder=descending`;
+  const inFlight = authorSearchesInFlight.get(cacheKey);
+  if (inFlight) return inFlight;
 
-  const response = await arxivFetch(url, { gate: 'api' });
-  if (!response.ok) {
-    throw new Error(`ArXiv API error: ${response.status} ${response.statusText}`);
+  const search = (async (): Promise<AuthorSearchResult> => {
+    if (Date.now() < authorRateLimitUntil) throw new ArxivAuthorRateLimitError();
+
+    const quoted = `"${authorName}"`;
+    const encoded = encodeURIComponent(quoted);
+    const url = `${ARXIV_API_BASE}?search_query=au:${encoded}&start=0&max_results=${maxResults}&sortBy=submittedDate&sortOrder=descending`;
+
+    // A favorite-author feed may contain many names. Do not retry each name
+    // several times after arXiv has started returning rate-limit responses.
+    const response = await arxivFetch(url, { gate: 'api', maxRetries: 0 });
+    if (response.status === 429 || response.status === 503) {
+      const retryAfter = response.headers.get('retry-after');
+      const seconds = retryAfter === null ? NaN : Number(retryAfter);
+      const retryAt = Number.isFinite(seconds) ? Date.now() + seconds * 1000 : Date.parse(retryAfter || '');
+      authorRateLimitUntil = Math.max(Date.now() + AUTHOR_RATE_LIMIT_COOLDOWN_MS, retryAt || 0);
+      saveAuthorCache();
+      throw new ArxivAuthorRateLimitError();
+    }
+    if (!response.ok) {
+      throw new Error(`ArXiv API error: ${response.status} ${response.statusText}`);
+    }
+
+    const xml = await response.text();
+    const result = await parseStringPromise(xml);
+
+    const feed = result.feed;
+    const totalResults = parseInt(feed['opensearch:totalResults']?.[0]?._ || '0', 10);
+    const papers = feed.entry ? feed.entry.map((entry: ArxivEntry) => parseEntry(entry)) : [];
+    const answer = { papers, totalResults };
+    authorCache.set(cacheKey, { ...answer, fetchedAt: Date.now() });
+    saveAuthorCache();
+    return answer;
+  })();
+
+  authorSearchesInFlight.set(cacheKey, search);
+  try {
+    return await search;
+  } finally {
+    authorSearchesInFlight.delete(cacheKey);
   }
-
-  const xml = await response.text();
-  const result = await parseStringPromise(xml);
-
-  const feed = result.feed;
-  const totalResults = parseInt(feed['opensearch:totalResults']?.[0]?._ || '0', 10);
-
-  if (!feed.entry) {
-    const empty = { papers: [], totalResults: 0 };
-    authorCache.set(cacheKey, { ...empty, fetchedAt: Date.now() });
-    return empty;
-  }
-
-  const papers = feed.entry.map((entry: ArxivEntry) => parseEntry(entry));
-  authorCache.set(cacheKey, { papers, totalResults, fetchedAt: Date.now() });
-  return { papers, totalResults };
 }
 
 interface RssItem {
